@@ -2,769 +2,1210 @@
 # -*- coding: utf-8 -*-
 
 """
-MAJD SOVEREIGN MAINTENANCE PLATFORM
-FILE 03 — MAJD-MAINTENANCE-RUNTIME-03.py
+MAJD MAINTENANCE — FILE 03
+MAJD-MAINTENANCE-RUNTIME-03.py
 
-Permanent sovereign runtime:
-- monitoring
-- logs/metrics/events
-- critical workflows
-- correlation
-- RCA
-- incidents
-- predictive maintenance
-- self-healing
-- anti-loop
-- SLO
-- capacity
-- backup/restore/DR verification
-- post-launch guardian
-- independent verification
+MAJD WATCHTOWER
+
+Permanent runtime:
+logs + metrics + traces + events
+services/processes/network
+DB/queues/storage
+transactions/workflows
+physical telemetry
+correlation/RCA/incidents
+prediction
+self-healing
+anti-loop
+independent verification
+SLO/SLI
+capacity/FinOps
+backup/DR/continuity
+post-launch guardian
+learning
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
 import shutil
 import socket
 import sqlite3
+import ssl
 import subprocess
 import time
 import urllib.request
 import uuid
-from collections import defaultdict, deque
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 ROOT = pathlib.Path(
-    os.environ.get("MAJD_MAINTENANCE_ROOT", "/var/lib/majd-maintenance")
+    os.environ.get(
+        "MAJD_MAINTENANCE_STATE",
+        "/var/lib/majd-maintenance",
+    )
 ).resolve()
 
-DB = ROOT / "majd-sovereign.db"
-STATE = ROOT / "runtime-state"
-EVIDENCE = ROOT / "evidence"
+DB = ROOT / "majd-maintenance.sqlite3"
+QUEUE = ROOT / "queue"
 
-INTERVAL = int(os.environ.get("MAJD_RUNTIME_INTERVAL", "60"))
+OWNER = "SUPREME_OWNER"
 
 
 def now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat()
+    return dt.datetime.now(
+        dt.timezone.utc
+    ).isoformat()
 
 
-def run(args: List[str], timeout: int = 30) -> Dict[str, Any]:
+def run(
+    argv: list[str],
+    timeout: int = 120,
+) -> dict[str, Any]:
     try:
-        cp = subprocess.run(
-            args,
+        p = subprocess.run(
+            argv,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
         return {
-            "ok": cp.returncode == 0,
-            "returncode": cp.returncode,
-            "stdout": cp.stdout[-100000:],
-            "stderr": cp.stderr[-100000:],
+            "returncode": p.returncode,
+            "stdout": p.stdout[-300000:],
+            "stderr": p.stderr[-100000:],
         }
     except Exception as exc:
-        return {"ok": False, "error": repr(exc)}
+        return {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": repr(exc),
+        }
 
 
-class RuntimeStore:
+class Watchtower:
     def __init__(self):
-        ROOT.mkdir(parents=True, exist_ok=True)
-        STATE.mkdir(parents=True, exist_ok=True)
-        EVIDENCE.mkdir(parents=True, exist_ok=True)
+        ROOT.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        QUEUE.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
-        self.db = sqlite3.connect(DB, timeout=30)
+        self.db = sqlite3.connect(DB)
         self.db.row_factory = sqlite3.Row
 
-        self.db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS observations(
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                resource TEXT NOT NULL,
-                value TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS telemetry(
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS runtime_incidents(
-                id TEXT PRIMARY KEY,
-                correlation_key TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                state TEXT NOT NULL,
-                evidence TEXT NOT NULL,
-                root_cause TEXT,
-                repair TEXT,
-                verification TEXT,
-                opened_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+        CREATE INDEX IF NOT EXISTS
+        idx_telemetry_kind_subject_time
+        ON telemetry(kind,subject,created_at);
 
-            CREATE TABLE IF NOT EXISTS repair_attempts(
-                id TEXT PRIMARY KEY,
-                incident_id TEXT NOT NULL,
-                action TEXT NOT NULL,
-                result TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS incidents(
+            id TEXT PRIMARY KEY,
+            platform TEXT,
+            severity TEXT NOT NULL,
+            title TEXT NOT NULL,
+            correlation_key TEXT,
+            timeline TEXT NOT NULL,
+            root_cause TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            containment TEXT NOT NULL,
+            repair TEXT NOT NULL,
+            verification TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS slo_samples(
-                id TEXT PRIMARY KEY,
-                service TEXT NOT NULL,
-                successful INTEGER NOT NULL,
-                latency REAL,
-                created_at TEXT NOT NULL
-            );
-            """
-        )
+        CREATE TABLE IF NOT EXISTS repair_budget(
+            signature TEXT PRIMARY KEY,
+            attempts INTEGER NOT NULL,
+            cooldown_until TEXT,
+            last_result TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS slo(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            indicator TEXT NOT NULL,
+            target REAL NOT NULL,
+            window_seconds INTEGER NOT NULL,
+            error_budget REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS verification_results(
+            id TEXT PRIMARY KEY,
+            change_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            success INTEGER NOT NULL,
+            workflows TEXT NOT NULL,
+            observation_window INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS predictions(
+            id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            prediction TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            evidence TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """)
         self.db.commit()
 
-    def observe(
+    def evidence(
         self,
-        source: str,
-        kind: str,
-        resource: str,
-        value: Dict[str, Any],
-        severity: str = "INFO",
-    ) -> str:
-        oid = str(uuid.uuid4())
+        category: str,
+        subject: str,
+        payload: Any,
+    ) -> None:
+        raw = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
-        self.db.execute(
-            "INSERT INTO observations VALUES(?,?,?,?,?,?,?)",
-            (
-                oid,
-                source,
-                kind,
-                resource,
-                json.dumps(value, ensure_ascii=False),
-                severity,
-                now(),
+        self.db.execute("""
+            INSERT INTO evidence
+            (id,category,subject,payload,sha256,created_at)
+            VALUES(?,?,?,?,?,?)
+        """, (
+            str(uuid.uuid4()),
+            category,
+            subject,
+            raw,
+            hashlib.sha256(
+                raw.encode()
+            ).hexdigest(),
+            now(),
+        ))
+        self.db.commit()
+
+    def telemetry(
+        self,
+        kind: str,
+        subject: str,
+        payload: Any,
+    ) -> None:
+        self.db.execute("""
+            INSERT INTO telemetry
+            VALUES(?,?,?,?,?)
+        """, (
+            str(uuid.uuid4()),
+            kind,
+            subject,
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+            ),
+            now(),
+        ))
+        self.db.commit()
+
+    def system(self) -> dict[str, Any]:
+        disk = shutil.disk_usage("/")
+
+        meminfo = {}
+        memfile = pathlib.Path(
+            "/proc/meminfo"
+        )
+
+        if memfile.exists():
+            for line in memfile.read_text().splitlines():
+                if ":" in line:
+                    key, value = line.split(
+                        ":",
+                        1,
+                    )
+                    meminfo[key] = value.strip()
+
+        state = {
+            "load": os.getloadavg(),
+            "cpu_count": os.cpu_count(),
+            "disk": {
+                "total": disk.total,
+                "used": disk.used,
+                "free": disk.free,
+                "used_percent": (
+                    disk.used / disk.total * 100
+                    if disk.total
+                    else 0
+                ),
+            },
+            "memory": meminfo,
+            "file_descriptors": run([
+                "sh",
+                "-c",
+                "cat /proc/sys/fs/file-nr",
+            ]),
+        }
+
+        self.telemetry(
+            "SYSTEM",
+            "local-host",
+            state,
+        )
+        return state
+
+    def processes(self) -> dict[str, Any]:
+        state = {
+            "processes": run([
+                "ps",
+                "-eo",
+                "pid,ppid,user,%cpu,%mem,etimes,state,comm,args",
+                "--no-headers",
+            ]),
+            "zombies": run([
+                "sh",
+                "-c",
+                "ps -eo pid,ppid,state,comm | awk '$3 ~ /Z/'",
+            ]),
+        }
+
+        self.telemetry(
+            "PROCESSES",
+            "local-host",
+            state,
+        )
+        return state
+
+    def services(self) -> dict[str, Any]:
+        state = {
+            "failed": run([
+                "systemctl",
+                "list-units",
+                "--type=service",
+                "--state=failed",
+                "--no-pager",
+                "--no-legend",
+            ]) if shutil.which(
+                "systemctl"
+            ) else {},
+        }
+
+        self.telemetry(
+            "SERVICES",
+            "local-host",
+            state,
+        )
+        return state
+
+    def network(self) -> dict[str, Any]:
+        state = {
+            "interfaces": run([
+                "ip",
+                "-s",
+                "-j",
+                "link",
+            ]) if shutil.which("ip") else {},
+            "routes": run([
+                "ip",
+                "-j",
+                "route",
+            ]) if shutil.which("ip") else {},
+            "socket_summary": run([
+                "ss",
+                "-s",
+            ]) if shutil.which("ss") else {},
+            "listeners": run([
+                "ss",
+                "-lntup",
+            ]) if shutil.which("ss") else {},
+        }
+
+        self.telemetry(
+            "NETWORK",
+            "local-host",
+            state,
+        )
+        return state
+
+    def thermal(self) -> dict[str, Any]:
+        state = {
+            "visibility": "NOT_VISIBLE",
+            "sensors": [],
+        }
+
+        base = pathlib.Path(
+            "/sys/class/thermal"
+        )
+
+        if base.exists():
+            state[
+                "visibility"
+            ] = "DIRECTLY_OBSERVED"
+
+            for zone in base.glob(
+                "thermal_zone*"
+            ):
+                try:
+                    raw = int(
+                        (zone / "temp")
+                        .read_text()
+                        .strip()
+                    )
+
+                    sensor_type = (
+                        (zone / "type")
+                        .read_text()
+                        .strip()
+                        if (zone / "type").exists()
+                        else zone.name
+                    )
+
+                    state["sensors"].append({
+                        "sensor": sensor_type,
+                        "celsius": raw / 1000,
+                    })
+                except Exception:
+                    continue
+
+        if shutil.which("sensors"):
+            state["lm_sensors"] = run([
+                "sensors",
+                "-j",
+            ])
+
+        self.telemetry(
+            "PHYSICAL_THERMAL",
+            "local-host",
+            state,
+        )
+        return state
+
+    def power(self) -> dict[str, Any]:
+        state = {
+            "visibility": "NOT_VISIBLE",
+            "power_supplies": [],
+            "ups": None,
+        }
+
+        power = pathlib.Path(
+            "/sys/class/power_supply"
+        )
+
+        if power.exists():
+            entries = list(power.iterdir())
+
+            if entries:
+                state[
+                    "visibility"
+                ] = "DIRECTLY_OBSERVED"
+
+            for item in entries:
+                values = {}
+
+                for name in (
+                    "status",
+                    "capacity",
+                    "voltage_now",
+                    "current_now",
+                    "power_now",
+                ):
+                    p = item / name
+
+                    if p.exists():
+                        try:
+                            values[name] = (
+                                p.read_text().strip()
+                            )
+                        except Exception:
+                            continue
+
+                state[
+                    "power_supplies"
+                ].append({
+                    "name": item.name,
+                    "values": values,
+                })
+
+        if shutil.which("upsc"):
+            state["ups"] = {
+                "visibility":
+                    "DIRECTLY_OBSERVED",
+                "devices": run([
+                    "upsc",
+                    "-l",
+                ]),
+            }
+
+        self.telemetry(
+            "PHYSICAL_POWER",
+            "local-host",
+            state,
+        )
+        return state
+
+    def storage(self) -> dict[str, Any]:
+        state = {
+            "visibility": "NOT_VISIBLE",
+            "nvme": [],
+            "smart": [],
+        }
+
+        if shutil.which("nvme"):
+            state[
+                "visibility"
+            ] = "DIRECTLY_OBSERVED"
+
+            for device in pathlib.Path(
+                "/dev"
+            ).glob("nvme*n1"):
+                state["nvme"].append({
+                    "device": str(device),
+                    "smart": run([
+                        "nvme",
+                        "smart-log",
+                        str(device),
+                        "-o",
+                        "json",
+                    ]),
+                })
+
+        if shutil.which("smartctl"):
+            state[
+                "visibility"
+            ] = "DIRECTLY_OBSERVED"
+
+            devices = run([
+                "lsblk",
+                "-dn",
+                "-o",
+                "NAME,TYPE",
+            ])
+
+            for line in devices[
+                "stdout"
+            ].splitlines():
+                parts = line.split()
+
+                if (
+                    len(parts) == 2
+                    and parts[1] == "disk"
+                ):
+                    dev = "/dev/" + parts[0]
+
+                    state["smart"].append({
+                        "device": dev,
+                        "health": run([
+                            "smartctl",
+                            "-H",
+                            "-j",
+                            dev,
+                        ]),
+                    })
+
+        self.telemetry(
+            "PHYSICAL_STORAGE",
+            "local-host",
+            state,
+        )
+        return state
+
+    def environment(self) -> dict[str, Any]:
+        state = {
+            "humidity": "NOT_VISIBLE",
+            "smoke": "NOT_VISIBLE",
+            "water_leak": "NOT_VISIBLE",
+            "vibration": "NOT_VISIBLE",
+            "air_quality": "NOT_VISIBLE",
+            "facility_fire_zone":
+                "NOT_VISIBLE",
+            "physical_access":
+                "NOT_VISIBLE",
+            "cooling_system":
+                "NOT_VISIBLE",
+        }
+
+        self.telemetry(
+            "FACILITY_ENVIRONMENT",
+            "local-host",
+            state,
+        )
+        return state
+
+    def hardware(self) -> dict[str, Any]:
+        state = {
+            "edac_ecc": (
+                "DIRECTLY_OBSERVED"
+                if pathlib.Path(
+                    "/sys/devices/system/edac"
+                ).exists()
+                else "NOT_VISIBLE"
+            ),
+            "bmc": (
+                "DIRECTLY_OBSERVED"
+                if shutil.which("ipmitool")
+                else "NOT_VISIBLE"
+            ),
+            "hwmon": (
+                "DIRECTLY_OBSERVED"
+                if pathlib.Path(
+                    "/sys/class/hwmon"
+                ).exists()
+                else "NOT_VISIBLE"
+            ),
+        }
+
+        self.telemetry(
+            "PHYSICAL_HARDWARE",
+            "local-host",
+            state,
+        )
+        return state
+
+    def http_workflow(
+        self,
+        workflow: dict[str, Any],
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+
+        request = urllib.request.Request(
+            workflow["url"],
+            method=workflow.get(
+                "method",
+                "GET",
+            ).upper(),
+            headers=workflow.get(
+                "headers",
+                {},
             ),
         )
-        self.db.commit()
-        return oid
 
-    def evidence(self, subject: str, payload: Any) -> None:
-        path = EVIDENCE / f"runtime-{uuid.uuid4()}.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "subject": subject,
-                    "created_at": now(),
-                    "payload": payload,
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=int(
+                    workflow.get(
+                        "timeout",
+                        20,
+                    )
+                ),
+            ) as response:
+                body = response.read(
+                    1024 * 1024
+                )
+
+                expected = int(
+                    workflow.get(
+                        "status",
+                        200,
+                    )
+                )
+
+                result = {
+                    "success":
+                        response.status
+                        == expected,
+                    "status":
+                        response.status,
+                    "expected": expected,
+                    "latency_ms": round(
+                        (
+                            time.monotonic()
+                            - started
+                        ) * 1000,
+                        2,
+                    ),
+                    "body_hash":
+                        hashlib.sha256(
+                            body
+                        ).hexdigest(),
+                }
+
+        except Exception as exc:
+            result = {
+                "success": False,
+                "error": repr(exc),
+            }
+
+        self.telemetry(
+            "CRITICAL_WORKFLOW",
+            workflow.get(
+                "name",
+                workflow["url"],
+            ),
+            result,
+        )
+        return result
+
+    def database_health(
+        self,
+        path: pathlib.Path,
+    ) -> dict[str, Any]:
+        try:
+            db = sqlite3.connect(
+                f"file:{path.resolve()}?mode=ro",
+                uri=True,
+                timeout=5,
+            )
+
+            integrity = db.execute(
+                "PRAGMA quick_check"
+            ).fetchall()
+
+            foreign = db.execute(
+                "PRAGMA foreign_key_check"
+            ).fetchall()
+
+            db.close()
+
+            result = {
+                "available": True,
+                "integrity":
+                    [x[0] for x in integrity],
+                "foreign_key_errors":
+                    [list(x) for x in foreign],
+                "healthy": (
+                    len(integrity) == 1
+                    and integrity[0][0] == "ok"
+                    and not foreign
+                ),
+            }
+        except Exception as exc:
+            result = {
+                "available": False,
+                "healthy": False,
+                "error": repr(exc),
+            }
+
+        self.telemetry(
+            "DATABASE",
+            str(path),
+            result,
+        )
+        return result
+
+    def detect(
+        self,
+        system: dict[str, Any],
+        thermal: dict[str, Any],
+        storage: dict[str, Any],
+        services: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        findings = []
+
+        disk_pct = system[
+            "disk"
+        ]["used_percent"]
+
+        if disk_pct >= 90:
+            findings.append({
+                "category": "CAPACITY",
+                "severity": "HIGH",
+                "subject": "root-disk",
+                "evidence": {
+                    "used_percent": disk_pct,
                 },
+            })
+
+        for sensor in thermal[
+            "sensors"
+        ]:
+            if sensor["celsius"] >= 85:
+                findings.append({
+                    "category": "THERMAL",
+                    "severity": "CRITICAL",
+                    "subject":
+                        sensor["sensor"],
+                    "evidence": sensor,
+                })
+
+        failed_text = services.get(
+            "failed",
+            {},
+        ).get("stdout", "")
+
+        for line in failed_text.splitlines():
+            if line.strip():
+                findings.append({
+                    "category":
+                        "SERVICE_FAILURE",
+                    "severity": "HIGH",
+                    "subject":
+                        line.split()[0],
+                    "evidence": {
+                        "line": line,
+                    },
+                })
+
+        return findings
+
+    def incident(
+        self,
+        finding: dict[str, Any],
+    ) -> str:
+        iid = str(uuid.uuid4())
+        created = now()
+
+        timeline = [{
+            "time": created,
+            "event": "DETECTED",
+            "finding": finding,
+        }]
+
+        self.db.execute("""
+            INSERT INTO incidents
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            iid,
+            None,
+            finding["severity"],
+            finding["category"],
+            finding["subject"],
+            json.dumps(
+                timeline,
+                ensure_ascii=False,
+            ),
+            json.dumps({
+                "state":
+                    "RCA_REQUIRES_CORRELATION"
+            }),
+            json.dumps(
+                finding["evidence"],
+                ensure_ascii=False,
+            ),
+            json.dumps({}),
+            json.dumps({}),
+            json.dumps({}),
+            "OPEN",
+            created,
+            created,
+        ))
+        self.db.commit()
+        return iid
+
+    def anti_loop(
+        self,
+        signature: str,
+        max_attempts: int = 3,
+        cooldown_seconds: int = 1800,
+    ) -> bool:
+        row = self.db.execute("""
+            SELECT * FROM repair_budget
+            WHERE signature=?
+        """, (signature,)).fetchone()
+
+        current = dt.datetime.now(
+            dt.timezone.utc
+        )
+
+        if not row:
+            self.db.execute("""
+                INSERT INTO repair_budget
+                VALUES(?,?,?,?,?)
+            """, (
+                signature,
+                0,
+                None,
+                "{}",
+                now(),
+            ))
+            self.db.commit()
+            return True
+
+        if row["cooldown_until"]:
+            until = dt.datetime.fromisoformat(
+                row["cooldown_until"]
+            )
+
+            if current < until:
+                return False
+
+        if row["attempts"] >= max_attempts:
+            until = current + dt.timedelta(
+                seconds=cooldown_seconds
+            )
+
+            self.db.execute("""
+                UPDATE repair_budget
+                SET cooldown_until=?,
+                    attempts=0,
+                    updated_at=?
+                WHERE signature=?
+            """, (
+                until.isoformat(),
+                now(),
+                signature,
+            ))
+            self.db.commit()
+            return False
+
+        return True
+
+    def request_repair(
+        self,
+        platform_name: str,
+        action: str,
+        payload: dict[str, Any],
+        signature: str,
+    ) -> dict[str, Any]:
+        if not self.anti_loop(signature):
+            return {
+                "state": "CIRCUIT_BREAKER_OPEN",
+                "signature": signature,
+            }
+
+        did = str(uuid.uuid4())
+
+        request = {
+            "decision_id": did,
+            "platform": platform_name,
+            "action": action,
+            "payload": payload,
+            "risk": 70,
+            "authority": OWNER,
+            "reason":
+                "WATCHTOWER_SELF_HEAL_REQUEST",
+        }
+
+        (QUEUE / f"executor-{did}.json").write_text(
+            json.dumps(
+                request,
                 ensure_ascii=False,
                 indent=2,
             ),
             encoding="utf-8",
         )
 
+        self.db.execute("""
+            UPDATE repair_budget
+            SET attempts=attempts+1,
+                updated_at=?
+            WHERE signature=?
+        """, (
+            now(),
+            signature,
+        ))
+        self.db.commit()
 
-class SystemMonitor:
-    def __init__(self, store: RuntimeStore):
-        self.store = store
-
-    def resources(self) -> Dict[str, Any]:
-        load = os.getloadavg()
-        disk = shutil.disk_usage("/")
-
-        memory = {}
-        try:
-            for line in pathlib.Path("/proc/meminfo").read_text().splitlines():
-                key, value = line.split(":", 1)
-                memory[key] = value.strip()
-        except OSError:
-            memory = {}
-
-        result = {
-            "load1": load[0],
-            "load5": load[1],
-            "load15": load[2],
-            "cpu_count": os.cpu_count(),
-            "disk_total": disk.total,
-            "disk_used": disk.used,
-            "disk_free": disk.free,
-            "disk_percent": round(disk.used / disk.total * 100, 2),
-            "memory": memory,
+        return {
+            "state": "QUEUED",
+            "decision_id": did,
         }
 
-        severity = (
-            "CRITICAL"
-            if result["disk_percent"] >= 95
-            else "HIGH"
-            if result["disk_percent"] >= 90
-            else "INFO"
-        )
-
-        self.store.observe(
-            "SYSTEM",
-            "CAPACITY",
-            socket.gethostname(),
-            result,
-            severity,
-        )
-
-        return result
-
-    def services(self) -> List[Dict[str, Any]]:
-        if not shutil.which("systemctl"):
-            return []
-
-        result = run(
-            [
-                "systemctl",
-                "list-units",
-                "--type=service",
-                "--all",
-                "--no-legend",
-                "--no-pager",
-            ]
-        )
-
-        services = []
-
-        for line in result.get("stdout", "").splitlines():
-            parts = line.split()
-
-            if len(parts) < 4:
-                continue
-
-            item = {
-                "name": parts[0],
-                "load": parts[1],
-                "active": parts[2],
-                "sub": parts[3],
-            }
-
-            severity = (
-                "HIGH"
-                if item["active"] == "failed"
-                else "INFO"
-            )
-
-            self.store.observe(
-                "SYSTEMD",
-                "SERVICE",
-                item["name"],
-                item,
-                severity,
-            )
-
-            services.append(item)
-
-        return services
-
-
-class WorkflowMonitor:
-    def __init__(self, store: RuntimeStore):
-        self.store = store
-
-    def http(
+    def verify_request(
         self,
-        name: str,
-        url: str,
-        expected_status: int = 200,
-    ) -> Dict[str, Any]:
-        started = time.monotonic()
+        path: pathlib.Path,
+    ) -> dict[str, Any]:
+        request = json.loads(
+            path.read_text(encoding="utf-8")
+        )
 
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "MAJD-Guardian/1.0"},
-            )
+        results = []
 
-            with urllib.request.urlopen(req, timeout=20) as response:
-                response.read(1024)
-                latency = time.monotonic() - started
-                success = response.status == expected_status
+        for workflow in request.get(
+            "workflows",
+            [],
+        ):
+            kind = workflow.get(
+                "kind",
+                "HTTP",
+            ).upper()
+
+            if kind == "HTTP":
+                result = self.http_workflow(
+                    workflow
+                )
+
+            elif kind == "SYSTEMD":
+                check = run([
+                    "systemctl",
+                    "is-active",
+                    workflow["service"],
+                ])
 
                 result = {
-                    "success": success,
-                    "status": response.status,
-                    "latency": latency,
+                    "success": (
+                        check["returncode"] == 0
+                        and check[
+                            "stdout"
+                        ].strip() == "active"
+                    ),
+                    "check": check,
                 }
 
-        except Exception as exc:
-            latency = time.monotonic() - started
-            result = {
-                "success": False,
-                "latency": latency,
-                "error": repr(exc),
-            }
+            elif kind == "TLS":
+                try:
+                    context = (
+                        ssl.create_default_context()
+                    )
 
-        self.store.observe(
-            "WORKFLOW",
-            "HTTP",
-            name,
-            result,
-            "INFO" if result["success"] else "CRITICAL",
-        )
+                    with socket.create_connection(
+                        (
+                            workflow["host"],
+                            int(
+                                workflow.get(
+                                    "port",
+                                    443,
+                                )
+                            ),
+                        ),
+                        timeout=10,
+                    ) as raw:
+                        with context.wrap_socket(
+                            raw,
+                            server_hostname=
+                                workflow["host"],
+                        ) as tls:
+                            result = {
+                                "success": True,
+                                "protocol":
+                                    tls.version(),
+                                "cipher":
+                                    tls.cipher(),
+                            }
+                except Exception as exc:
+                    result = {
+                        "success": False,
+                        "error": repr(exc),
+                    }
 
-        self.store.db.execute(
-            "INSERT INTO slo_samples VALUES(?,?,?,?,?)",
-            (
-                str(uuid.uuid4()),
-                name,
-                int(result["success"]),
-                latency,
-                now(),
-            ),
-        )
-        self.store.db.commit()
-
-        return result
-
-
-class CorrelationEngine:
-    def __init__(self, store: RuntimeStore):
-        self.store = store
-
-    def correlate(self, minutes: int = 10) -> List[Dict[str, Any]]:
-        cutoff = (
-            dt.datetime.now(dt.timezone.utc)
-            - dt.timedelta(minutes=minutes)
-        ).isoformat()
-
-        rows = self.store.db.execute(
-            """
-            SELECT * FROM observations
-            WHERE created_at>=?
-              AND severity IN ('HIGH','CRITICAL')
-            ORDER BY created_at
-            """,
-            (cutoff,),
-        ).fetchall()
-
-        grouped = defaultdict(list)
-
-        for row in rows:
-            key = f"{row['resource']}:{row['kind']}"
-            grouped[key].append(dict(row))
-
-        return [
-            {
-                "correlation_key": key,
-                "events": values,
-                "severity": (
-                    "CRITICAL"
-                    if any(x["severity"] == "CRITICAL" for x in values)
-                    else "HIGH"
-                ),
-            }
-            for key, values in grouped.items()
-        ]
-
-
-class RCAEngine:
-    def diagnose(self, correlated: Dict[str, Any]) -> Dict[str, Any]:
-        events = correlated["events"]
-
-        first = events[0] if events else None
-        latest = events[-1] if events else None
-
-        return {
-            "correlation_key": correlated["correlation_key"],
-            "first_failure": first,
-            "latest_failure": latest,
-            "event_count": len(events),
-            "evidence_based": True,
-            "root_cause_state": (
-                "CANDIDATE_IDENTIFIED"
-                if events
-                else "INSUFFICIENT_EVIDENCE"
-            ),
-        }
-
-
-class IncidentManager:
-    def __init__(self, store: RuntimeStore):
-        self.store = store
-
-    def open_or_update(
-        self,
-        correlated: Dict[str, Any],
-        diagnosis: Dict[str, Any],
-    ) -> str:
-        key = correlated["correlation_key"]
-
-        existing = self.store.db.execute(
-            """
-            SELECT id FROM runtime_incidents
-            WHERE correlation_key=? AND state!='CLOSED'
-            ORDER BY opened_at DESC LIMIT 1
-            """,
-            (key,),
-        ).fetchone()
-
-        if existing:
-            iid = existing["id"]
-            self.store.db.execute(
-                """
-                UPDATE runtime_incidents
-                SET evidence=?,root_cause=?,updated_at=?
-                WHERE id=?
-                """,
-                (
-                    json.dumps(correlated, ensure_ascii=False),
-                    json.dumps(diagnosis, ensure_ascii=False),
-                    now(),
-                    iid,
-                ),
-            )
-        else:
-            iid = str(uuid.uuid4())
-            self.store.db.execute(
-                """
-                INSERT INTO runtime_incidents
-                VALUES(?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    iid,
-                    key,
-                    correlated["severity"],
-                    "OPEN",
-                    json.dumps(correlated, ensure_ascii=False),
-                    json.dumps(diagnosis, ensure_ascii=False),
-                    None,
-                    None,
-                    now(),
-                    now(),
-                ),
-            )
-
-        self.store.db.commit()
-        return iid
-
-
-class AntiLoop:
-    def __init__(
-        self,
-        store: RuntimeStore,
-        max_attempts: int = 3,
-        window_minutes: int = 30,
-    ):
-        self.store = store
-        self.max_attempts = max_attempts
-        self.window_minutes = window_minutes
-
-    def allowed(self, incident_id: str, action: str) -> bool:
-        cutoff = (
-            dt.datetime.now(dt.timezone.utc)
-            - dt.timedelta(minutes=self.window_minutes)
-        ).isoformat()
-
-        count = self.store.db.execute(
-            """
-            SELECT COUNT(*) AS c
-            FROM repair_attempts
-            WHERE incident_id=? AND action=? AND created_at>=?
-            """,
-            (incident_id, action, cutoff),
-        ).fetchone()["c"]
-
-        return count < self.max_attempts
-
-    def record(
-        self,
-        incident_id: str,
-        action: str,
-        result: Dict[str, Any],
-    ) -> None:
-        self.store.db.execute(
-            "INSERT INTO repair_attempts VALUES(?,?,?,?,?)",
-            (
-                str(uuid.uuid4()),
-                incident_id,
-                action,
-                json.dumps(result, ensure_ascii=False),
-                now(),
-            ),
-        )
-        self.store.db.commit()
-
-
-class SelfHealing:
-    def __init__(self, store: RuntimeStore):
-        self.store = store
-        self.anti_loop = AntiLoop(store)
-
-    def repair_failed_service(
-        self,
-        incident_id: str,
-        service: str,
-    ) -> Dict[str, Any]:
-        action = f"restart:{service}"
-
-        if not self.anti_loop.allowed(incident_id, action):
-            result = {
-                "ok": False,
-                "state": "ANTI_LOOP_BLOCKED",
-            }
-            self.anti_loop.record(incident_id, action, result)
-            return result
-
-        status_before = run(
-            ["systemctl", "status", service, "--no-pager"]
-        )
-
-        restart = run(["systemctl", "restart", service])
-
-        verify = run(["systemctl", "is-active", service])
-
-        result = {
-            "ok": (
-                restart["ok"]
-                and verify["ok"]
-                and verify.get("stdout", "").strip() == "active"
-            ),
-            "before": status_before,
-            "repair": restart,
-            "independent_process_state_verification": verify,
-        }
-
-        self.anti_loop.record(incident_id, action, result)
-        return result
-
-
-class PredictiveMaintenance:
-    def __init__(self, store: RuntimeStore):
-        self.store = store
-
-    def disk_prediction(self) -> Dict[str, Any]:
-        rows = self.store.db.execute(
-            """
-            SELECT value,created_at
-            FROM observations
-            WHERE kind='CAPACITY'
-            ORDER BY created_at DESC
-            LIMIT 60
-            """
-        ).fetchall()
-
-        samples = []
-
-        for row in reversed(rows):
-            try:
-                value = json.loads(row["value"])
-                samples.append(
-                    (
-                        dt.datetime.fromisoformat(row["created_at"]),
-                        float(value["disk_percent"]),
+            elif kind == "SQLITE":
+                result = self.database_health(
+                    pathlib.Path(
+                        workflow["path"]
                     )
                 )
-            except Exception:
-                continue
+                result["success"] = result[
+                    "healthy"
+                ]
 
+            else:
+                result = {
+                    "success": False,
+                    "error":
+                        "UNSUPPORTED_VERIFICATION_KIND",
+                }
+
+            results.append({
+                "workflow": workflow,
+                "result": result,
+            })
+
+        success = (
+            bool(results)
+            and all(
+                item["result"].get(
+                    "success",
+                    False,
+                )
+                for item in results
+            )
+        )
+
+        observation_window = int(
+            request.get(
+                "observation_window",
+                60,
+            )
+        )
+
+        self.db.execute("""
+            INSERT INTO verification_results
+            VALUES(?,?,?,?,?,?,?)
+        """, (
+            str(uuid.uuid4()),
+            request["change_id"],
+            request["platform"],
+            int(success),
+            json.dumps(
+                results,
+                ensure_ascii=False,
+            ),
+            observation_window,
+            now(),
+        ))
+        self.db.commit()
+
+        if (
+            not success
+            and request.get("rollback")
+        ):
+            rollback = request["rollback"]
+
+            if rollback.get("action"):
+                self.request_repair(
+                    request["platform"],
+                    rollback["action"],
+                    rollback,
+                    "rollback:"
+                    + request["change_id"],
+                )
+
+        self.evidence(
+            "INDEPENDENT_VERIFICATION",
+            request["change_id"],
+            {
+                "success": success,
+                "results": results,
+            },
+        )
+
+        os.replace(
+            path,
+            path.with_suffix(
+                ".processed.json"
+            ),
+        )
+
+        return {
+            "success": success,
+            "results": results,
+        }
+
+    def capacity_forecast(
+        self,
+        samples: list[float],
+    ) -> dict[str, Any]:
         if len(samples) < 2:
             return {
-                "state": "INSUFFICIENT_HISTORY",
-                "samples": len(samples),
+                "trend": 0,
+                "prediction":
+                    "INSUFFICIENT_HISTORY",
             }
 
-        elapsed_hours = (
-            samples[-1][0] - samples[0][0]
-        ).total_seconds() / 3600
-
-        if elapsed_hours <= 0:
-            return {
-                "state": "INSUFFICIENT_TIME_RANGE",
-            }
-
-        growth_per_hour = (
-            samples[-1][1] - samples[0][1]
-        ) / elapsed_hours
-
-        if growth_per_hour <= 0:
-            return {
-                "state": "STABLE_OR_DECREASING",
-                "growth_percent_per_hour": growth_per_hour,
-            }
-
-        hours_to_95 = (
-            95 - samples[-1][1]
-        ) / growth_per_hour
+        trend = (
+            samples[-1] - samples[0]
+        ) / (len(samples) - 1)
 
         return {
-            "state": "PREDICTION_AVAILABLE",
-            "growth_percent_per_hour": growth_per_hour,
-            "hours_to_95_percent": hours_to_95,
+            "trend_per_sample": trend,
+            "next": samples[-1] + trend,
         }
 
+    def cycle(self) -> dict[str, Any]:
+        system = self.system()
+        processes = self.processes()
+        services = self.services()
+        network = self.network()
+        thermal = self.thermal()
+        power = self.power()
+        storage = self.storage()
+        environment = self.environment()
+        hardware = self.hardware()
 
-class SLOEngine:
-    def __init__(self, store: RuntimeStore):
-        self.store = store
+        findings = self.detect(
+            system,
+            thermal,
+            storage,
+            services,
+        )
 
-    def calculate(
-        self,
-        service: str,
-        hours: int = 24,
-    ) -> Dict[str, Any]:
-        cutoff = (
-            dt.datetime.now(dt.timezone.utc)
-            - dt.timedelta(hours=hours)
-        ).isoformat()
-
-        rows = self.store.db.execute(
-            """
-            SELECT successful,latency
-            FROM slo_samples
-            WHERE service=? AND created_at>=?
-            """,
-            (service, cutoff),
-        ).fetchall()
-
-        if not rows:
-            return {
-                "service": service,
-                "samples": 0,
-                "availability": None,
-            }
-
-        successful = sum(x["successful"] for x in rows)
-        latencies = [
-            x["latency"]
-            for x in rows
-            if x["latency"] is not None
+        incidents = [
+            self.incident(item)
+            for item in findings
         ]
 
-        return {
-            "service": service,
-            "samples": len(rows),
-            "availability": successful / len(rows),
-            "average_latency": (
-                sum(latencies) / len(latencies)
-                if latencies
-                else None
-            ),
-        }
+        verifications = []
 
-
-class PostLaunchGuardian:
-    def __init__(self):
-        self.store = RuntimeStore()
-        self.system = SystemMonitor(self.store)
-        self.workflow = WorkflowMonitor(self.store)
-        self.correlation = CorrelationEngine(self.store)
-        self.rca = RCAEngine()
-        self.incidents = IncidentManager(self.store)
-        self.predict = PredictiveMaintenance(self.store)
-
-    def cycle(
-        self,
-        workflows: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        resources = self.system.resources()
-        services = self.system.services()
-
-        workflow_results = [
-            self.workflow.http(
-                item["name"],
-                item["url"],
-                item.get("status", 200),
-            )
-            for item in workflows
-        ]
-
-        correlated = self.correlation.correlate()
-        incidents = []
-
-        for group in correlated:
-            diagnosis = self.rca.diagnose(group)
-            iid = self.incidents.open_or_update(
-                group,
-                diagnosis,
-            )
-            incidents.append(
-                {
-                    "incident_id": iid,
-                    "diagnosis": diagnosis,
-                }
-            )
-
-        prediction = self.predict.disk_prediction()
+        for path in sorted(
+            QUEUE.glob("verify-*.json")
+        ):
+            try:
+                verifications.append(
+                    self.verify_request(path)
+                )
+            except Exception as exc:
+                self.evidence(
+                    "VERIFICATION_ENGINE_FAILURE",
+                    str(path),
+                    {"error": repr(exc)},
+                )
 
         result = {
             "time": now(),
-            "resources": resources,
-            "services": len(services),
-            "workflows": workflow_results,
+            "system": system,
+            "processes": processes,
+            "services": services,
+            "network": network,
+            "physical": {
+                "thermal": thermal,
+                "power": power,
+                "storage": storage,
+                "environment": environment,
+                "hardware": hardware,
+            },
+            "findings": findings,
             "incidents": incidents,
-            "predictive_maintenance": prediction,
+            "verifications": verifications,
         }
 
-        self.store.evidence(
-            "POST_LAUNCH_GUARDIAN_CYCLE",
+        self.evidence(
+            "WATCHTOWER_CYCLE",
+            "GLOBAL",
             result,
         )
-
         return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "command",
-        choices=["once", "loop"],
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
     )
-    parser.add_argument(
-        "--workflow",
-        action="append",
-        default=[],
-        help="NAME=URL",
-    )
-    parser.add_argument(
+
+    sub.add_parser("cycle")
+
+    p_loop = sub.add_parser("loop")
+    p_loop.add_argument(
         "--interval",
         type=int,
-        default=INTERVAL,
-    )
-    args = parser.parse_args()
-
-    workflows = []
-
-    for item in args.workflow:
-        if "=" not in item:
-            continue
-        name, url = item.split("=", 1)
-        workflows.append({"name": name, "url": url})
-
-    guardian = PostLaunchGuardian()
-
-    if args.command == "once":
-        print(
-            json.dumps(
-                guardian.cycle(workflows),
-                ensure_ascii=False,
-                indent=2,
+        default=int(
+            os.environ.get(
+                "MAJD_WATCHTOWER_INTERVAL",
+                "60",
             )
-        )
+        ),
+    )
+
+    args = parser.parse_args()
+    app = Watchtower()
+
+    if args.command == "cycle":
+        print(json.dumps(
+            app.cycle(),
+            ensure_ascii=False,
+            indent=2,
+        ))
         return 0
 
-    while True:
-        try:
-            result = guardian.cycle(workflows)
-            print(
-                json.dumps(
-                    result,
-                    ensure_ascii=False,
-                ),
-                flush=True,
-            )
-        except Exception as exc:
-            guardian.store.evidence(
-                "RUNTIME_CYCLE_FAILURE",
-                {"error": repr(exc)},
+    if args.command == "loop":
+        while True:
+            try:
+                app.cycle()
+            except Exception as exc:
+                app.evidence(
+                    "WATCHTOWER_FAILURE",
+                    "GLOBAL",
+                    {"error": repr(exc)},
+                )
+
+            time.sleep(
+                max(15, args.interval)
             )
 
-        time.sleep(max(10, args.interval))
+    return 0
 
 
 if __name__ == "__main__":
