@@ -2,93 +2,116 @@
 # -*- coding: utf-8 -*-
 
 """
-MAJD SOVEREIGN MAINTENANCE PLATFORM
-FILE 01 — MAJD-MAINTENANCE-MASTERMIND-01.py
+MAJD MAINTENANCE — FILE 01
+MAJD-MAINTENANCE-MASTERMIND-01.py
 
-SUPREME OWNER:
-    SUPREME_OWNER
+SOVEREIGN GLOBAL MASTERMIND
+ABSOLUTE AUTHORITY: SUPREME_OWNER
 
-MISSION:
-    Sovereign discovery, understanding, knowledge graph, digital twin,
-    constitutions, policy-as-code, regulatory/compliance intelligence,
-    privacy/data governance, AI governance, architecture reasoning,
-    risk/impact analysis and execution decision generation.
+This is the governing intelligence plane for MAJD Maintenance.
 
-FILES:
-    01 Mastermind
-    02 Executor
-    03 Runtime
-    04 Sovereign Cyber Defense
-
-NO FILE 05.
-
-EXECUTION LAW:
-OBSERVE
-→ PREDICT/PREVENT
-→ DETECT
-→ CORRELATE
-→ DIAGNOSE
-→ DECIDE
-→ BACKUP
-→ REPAIR/WRITE REAL CODE
-→ BUILD/CONFIGURE
-→ REAL EXECUTION
-→ INDEPENDENT VERIFY
-→ DEPLOY/LAUNCH
-→ MONITOR
-→ PROTECT
+Permanent cycle:
+WORLD
+→ DISCOVER
+→ VERIFY OFFICIAL SOURCE
+→ APPLICABILITY
+→ IMPACT / RISK
+→ BACKUP PLAN
+→ BUILD / REBUILD PLAN
+→ SECURITY / COMPATIBILITY GATE
+→ EXECUTOR 02
+→ INDEPENDENT VERIFIER 03
+→ DEFENSE 04
+→ PRODUCTION OBSERVATION
+→ ROLLBACK / SELF-HEAL
 → LEARN
 → IMPROVE
 → REPEAT
 
-NO FAKE SUCCESS.
+NO FILE 05.
 """
 
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import datetime as dt
 import hashlib
 import json
 import os
 import pathlib
 import platform
-import re
 import shutil
 import socket
 import sqlite3
-import ssl
 import subprocess
-import sys
-import time
-import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
-from collections import defaultdict
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from dataclasses import dataclass, asdict
+from typing import Any, Optional
 
 
-VERSION = "1.0.0"
+VERSION = "6.0.0"
 OWNER = "SUPREME_OWNER"
 
 ROOT = pathlib.Path(
-    os.environ.get("MAJD_MAINTENANCE_ROOT", "/var/lib/majd-maintenance")
+    os.environ.get("MAJD_MAINTENANCE_STATE", "/var/lib/majd-maintenance")
 ).resolve()
 
-DB_PATH = ROOT / "majd-sovereign.db"
+DB = ROOT / "majd-maintenance.sqlite3"
 EVIDENCE = ROOT / "evidence"
-SNAPSHOTS = ROOT / "snapshots"
-PLANS = ROOT / "plans"
+QUEUE = ROOT / "queue"
+REGULATORY = ROOT / "regulatory"
+STATE = ROOT / "state"
 
-FILES = {
-    "01": "MAJD-MAINTENANCE-MASTERMIND-01.py",
-    "02": "MAJD-MAINTENANCE-EXECUTOR-02.py",
-    "03": "MAJD-MAINTENANCE-RUNTIME-03.py",
-    "04": "MAJD-SOVEREIGN-CYBER-DEFENSE-04.py",
-}
+PRIMARY_FILES = (
+    "MAJD-MAINTENANCE-MASTERMIND-01.py",
+    "MAJD-MAINTENANCE-EXECUTOR-02.py",
+    "MAJD-MAINTENANCE-RUNTIME-03.py",
+    "MAJD-SOVEREIGN-CYBER-DEFENSE-04.py",
+)
 
-EXECUTION_PATH = (
+VISIBILITY = (
+    "DIRECTLY_CONTROLLED",
+    "DIRECTLY_OBSERVED",
+    "PROVIDER_REPORTED",
+    "CONTRACTUALLY_ASSURED",
+    "NOT_VISIBLE",
+    "NOT_APPLICABLE",
+)
+
+SECTOR_OVERLAYS = (
+    "HEALTH",
+    "FINANCE",
+    "CHILDREN",
+    "MEDIA",
+    "COMMERCE",
+    "HOSTING_CLOUD",
+    "EMAIL_COMMUNICATIONS",
+    "AI",
+    "MARKETPLACE",
+    "GAMING",
+)
+
+PHYSICAL_CHAIN = (
+    "PHYSICAL_WORLD",
+    "FACILITY",
+    "POWER",
+    "COOLING",
+    "RACK",
+    "HARDWARE",
+    "NETWORK",
+    "OS",
+    "SOFTWARE",
+    "DATA",
+    "AI",
+    "PLATFORM",
+    "BUSINESS",
+    "USER",
+    "LAW",
+)
+
+LIFECYCLE = (
     "OBSERVE",
     "PREDICT_PREVENT",
     "DETECT",
@@ -109,1092 +132,2075 @@ EXECUTION_PATH = (
 )
 
 
-def utcnow() -> str:
+def now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
 def stable_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def digest(value: Any) -> str:
     if not isinstance(value, (bytes, bytearray)):
-        value = stable_json(value).encode("utf-8")
+        value = stable_json(value).encode()
     return hashlib.sha256(value).hexdigest()
 
 
-def ensure_dirs() -> None:
-    for p in (ROOT, EVIDENCE, SNAPSHOTS, PLANS):
-        p.mkdir(parents=True, exist_ok=True)
-
-
-def run(
-    command: List[str],
-    timeout: int = 30,
-    cwd: Optional[pathlib.Path] = None,
-) -> Dict[str, Any]:
-    started = time.monotonic()
+def cmd(argv: list[str], timeout: int = 60) -> dict[str, Any]:
     try:
-        cp = subprocess.run(
-            command,
-            cwd=str(cwd) if cwd else None,
+        p = subprocess.run(
+            argv,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
         return {
-            "command": command,
-            "returncode": cp.returncode,
-            "stdout": cp.stdout[-100000:],
-            "stderr": cp.stderr[-100000:],
-            "duration": round(time.monotonic() - started, 4),
-            "ok": cp.returncode == 0,
+            "argv": argv,
+            "returncode": p.returncode,
+            "stdout": p.stdout[-250000:],
+            "stderr": p.stderr[-100000:],
         }
     except Exception as exc:
         return {
-            "command": command,
-            "returncode": None,
+            "argv": argv,
+            "returncode": -1,
             "stdout": "",
             "stderr": repr(exc),
-            "duration": round(time.monotonic() - started, 4),
-            "ok": False,
         }
 
 
-class Store:
-    def __init__(self, path: pathlib.Path = DB_PATH):
-        ensure_dirs()
-        self.db = sqlite3.connect(path, timeout=30)
+class Database:
+    def __init__(self) -> None:
+        for directory in (ROOT, EVIDENCE, QUEUE, REGULATORY, STATE):
+            directory.mkdir(parents=True, exist_ok=True)
+
+        self.db = sqlite3.connect(DB)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
-        self._schema()
+        self.db.execute("PRAGMA synchronous=FULL")
+        self.schema()
 
-    def _schema(self) -> None:
-        self.db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS resources(
-                id TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                name TEXT NOT NULL,
-                locator TEXT,
-                state TEXT NOT NULL,
-                criticality TEXT NOT NULL,
-                metadata TEXT NOT NULL,
-                discovered_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+    def schema(self) -> None:
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS evidence(
+            id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
 
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_unique
-            ON resources(kind,name,locator);
+        CREATE TABLE IF NOT EXISTS resources(
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            platform TEXT,
+            location TEXT,
+            criticality INTEGER NOT NULL DEFAULT 0,
+            visibility TEXT NOT NULL,
+            desired_state TEXT NOT NULL,
+            observed_state TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(kind,name,location)
+        );
 
-            CREATE TABLE IF NOT EXISTS relations(
-                source_id TEXT NOT NULL,
-                relation TEXT NOT NULL,
-                target_id TEXT NOT NULL,
-                metadata TEXT NOT NULL,
-                PRIMARY KEY(source_id,relation,target_id)
-            );
+        CREATE TABLE IF NOT EXISTS relationships(
+            source_id TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            metadata TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(source_id,relation,target_id)
+        );
 
-            CREATE TABLE IF NOT EXISTS policies(
-                id TEXT PRIMARY KEY,
-                scope TEXT NOT NULL,
-                name TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                mode TEXT NOT NULL,
-                rule TEXT NOT NULL,
-                enabled INTEGER NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS platforms(
+            id TEXT PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            countries TEXT NOT NULL,
+            sectors TEXT NOT NULL,
+            users TEXT NOT NULL,
+            data_profile TEXT NOT NULL,
+            ai_profile TEXT NOT NULL,
+            payments_profile TEXT NOT NULL,
+            email_profile TEXT NOT NULL,
+            infrastructure_profile TEXT NOT NULL,
+            product_profile TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS findings(
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                category TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                resource_id TEXT,
-                title TEXT NOT NULL,
-                evidence TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS constitutions(
+            id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL,
+            platform TEXT,
+            version INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            active INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS decisions(
-                id TEXT PRIMARY KEY,
-                finding_id TEXT,
-                action TEXT NOT NULL,
-                risk TEXT NOT NULL,
-                requires_owner INTEGER NOT NULL,
-                external_dependency TEXT,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS policies(
+            id TEXT PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            scope TEXT NOT NULL,
+            body TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            active INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS evidence(
-                id TEXT PRIMARY KEY,
-                category TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                sha256 TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS policy_results(
+            id TEXT PRIMARY KEY,
+            policy TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            result TEXT NOT NULL,
+            reasons TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS regulatory_rules(
-                id TEXT PRIMARY KEY,
-                jurisdiction TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                source TEXT,
-                effective_from TEXT,
-                deadline TEXT,
-                applicability TEXT NOT NULL,
-                requirements TEXT NOT NULL,
-                last_verified TEXT
-            );
+        CREATE TABLE IF NOT EXISTS official_sources(
+            id TEXT PRIMARY KEY,
+            jurisdiction TEXT NOT NULL,
+            authority TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT UNIQUE NOT NULL,
+            source_type TEXT NOT NULL,
+            official_domains TEXT NOT NULL,
+            last_hash TEXT,
+            last_checked TEXT
+        );
 
-            CREATE TABLE IF NOT EXISTS data_assets(
-                id TEXT PRIMARY KEY,
-                resource_id TEXT,
-                name TEXT NOT NULL,
-                classification TEXT NOT NULL,
-                purpose TEXT,
-                lawful_basis TEXT,
-                retention TEXT,
-                residency TEXT,
-                cross_border INTEGER NOT NULL,
-                metadata TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS source_snapshots(
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            body_path TEXT NOT NULL,
+            headers TEXT NOT NULL,
+            official_verified INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS ai_assets(
-                id TEXT PRIMARY KEY,
-                resource_id TEXT,
-                name TEXT NOT NULL,
-                provider TEXT,
-                model TEXT,
-                tools TEXT NOT NULL,
-                permissions TEXT NOT NULL,
-                provenance TEXT,
-                risk TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS regulatory_changes(
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            old_hash TEXT,
+            new_hash TEXT NOT NULL,
+            official_verified INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS knowledge(
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS applicability(
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            result TEXT NOT NULL,
+            reasons TEXT NOT NULL,
+            impact TEXT NOT NULL,
+            risk TEXT NOT NULL,
+            review_status TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS incidents(
-                id TEXT PRIMARY KEY,
-                severity TEXT NOT NULL,
-                state TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                timeline TEXT NOT NULL,
-                root_cause TEXT,
-                remediation TEXT,
-                verification TEXT,
-                opened_at TEXT NOT NULL,
-                closed_at TEXT
-            );
-            """
-        )
+        CREATE TABLE IF NOT EXISTS regulatory_deadlines(
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            platform TEXT,
+            deadline TEXT NOT NULL,
+            requirement TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS data_assets(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            name TEXT NOT NULL,
+            classification TEXT NOT NULL,
+            owner TEXT,
+            purpose TEXT,
+            lawful_basis TEXT,
+            consent_model TEXT,
+            residency TEXT,
+            transfer_basis TEXT,
+            retention TEXT,
+            deletion_rule TEXT,
+            source_of_truth TEXT,
+            lineage TEXT NOT NULL,
+            quality TEXT NOT NULL,
+            processors TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_assets(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            provider TEXT,
+            model TEXT,
+            provenance TEXT NOT NULL,
+            permissions TEXT NOT NULL,
+            tools TEXT NOT NULL,
+            evaluations TEXT NOT NULL,
+            security TEXT NOT NULL,
+            drift_state TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS dependencies(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            ecosystem TEXT NOT NULL,
+            name TEXT NOT NULL,
+            version TEXT,
+            license TEXT,
+            source TEXT,
+            provenance TEXT NOT NULL,
+            vulnerabilities TEXT NOT NULL,
+            eol TEXT,
+            compatibility TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS service_catalog(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            service TEXT NOT NULL,
+            owner TEXT,
+            criticality INTEGER NOT NULL,
+            requirements TEXT NOT NULL,
+            dependencies TEXT NOT NULL,
+            availability_target REAL,
+            latency_target_ms REAL,
+            continuity TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS quality_gates(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            gate TEXT NOT NULL,
+            checks TEXT NOT NULL,
+            result TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS customer_journeys(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            name TEXT NOT NULL,
+            steps TEXT NOT NULL,
+            critical INTEGER NOT NULL,
+            expected_result TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS innovation(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            idea TEXT NOT NULL,
+            value_analysis TEXT NOT NULL,
+            risk TEXT NOT NULL,
+            compatibility TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            actual_value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS business_controls(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            control_name TEXT NOT NULL,
+            control_type TEXT NOT NULL,
+            rule TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            state TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS physical_assets(
+            id TEXT PRIMARY KEY,
+            platform TEXT,
+            asset_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            parent_id TEXT,
+            visibility TEXT NOT NULL,
+            desired_state TEXT NOT NULL,
+            observed_state TEXT NOT NULL,
+            supplier TEXT,
+            model TEXT,
+            serial TEXT,
+            firmware TEXT,
+            warranty TEXT,
+            eol TEXT,
+            replacement_lead_time TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS capacity(
+            id TEXT PRIMARY KEY,
+            platform TEXT,
+            resource TEXT NOT NULL,
+            capacity TEXT NOT NULL,
+            usage TEXT NOT NULL,
+            headroom TEXT NOT NULL,
+            forecast TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS plans(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            discovery TEXT NOT NULL,
+            applicability TEXT NOT NULL,
+            impact TEXT NOT NULL,
+            risk TEXT NOT NULL,
+            backup TEXT NOT NULL,
+            build TEXT NOT NULL,
+            security TEXT NOT NULL,
+            verification TEXT NOT NULL,
+            deployment TEXT NOT NULL,
+            rollback TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS decisions(
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            authority TEXT NOT NULL,
+            risk INTEGER NOT NULL,
+            owner_required INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS learning(
+            id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            signature TEXT UNIQUE NOT NULL,
+            knowledge TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """)
         self.db.commit()
 
-    def evidence(self, category: str, subject: str, payload: Any) -> str:
+    def evidence(
+        self,
+        category: str,
+        subject: str,
+        payload: Any,
+    ) -> str:
         eid = str(uuid.uuid4())
-        raw = stable_json(payload)
+        h = digest(payload)
+        created = now()
+
         self.db.execute(
             "INSERT INTO evidence VALUES(?,?,?,?,?,?)",
-            (eid, category, subject, digest(raw.encode()), raw, utcnow()),
+            (eid, category, subject, stable_json(payload), h, created),
         )
         self.db.commit()
 
-        target = EVIDENCE / f"{eid}.json"
-        target.write_text(
-            stable_json(
-                {
-                    "id": eid,
-                    "category": category,
-                    "subject": subject,
-                    "sha256": digest(raw.encode()),
-                    "created_at": utcnow(),
-                    "payload": payload,
-                }
-            ),
+        (EVIDENCE / f"{created.replace(':','_')}-{eid}.json").write_text(
+            json.dumps({
+                "id": eid,
+                "category": category,
+                "subject": subject,
+                "payload": payload,
+                "sha256": h,
+                "created_at": created,
+            }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         return eid
 
-    def upsert_resource(
+    def resource(
         self,
         kind: str,
         name: str,
-        locator: str,
-        state: str,
-        criticality: str,
-        metadata: Dict[str, Any],
+        location: str,
+        observed: Any,
+        *,
+        platform_name: Optional[str] = None,
+        desired: Any = None,
+        criticality: int = 0,
+        visibility: str = "DIRECTLY_OBSERVED",
+        metadata: Any = None,
     ) -> str:
-        row = self.db.execute(
-            "SELECT id FROM resources WHERE kind=? AND name=? AND locator=?",
-            (kind, name, locator),
-        ).fetchone()
-        now = utcnow()
+        if visibility not in VISIBILITY:
+            raise ValueError("invalid physical/operational visibility")
 
-        if row:
-            rid = row["id"]
-            self.db.execute(
-                """
-                UPDATE resources
-                SET state=?,criticality=?,metadata=?,updated_at=?
-                WHERE id=?
-                """,
-                (state, criticality, stable_json(metadata), now, rid),
-            )
-        else:
-            rid = str(uuid.uuid4())
-            self.db.execute(
-                "INSERT INTO resources VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    rid,
-                    kind,
-                    name,
-                    locator,
-                    state,
-                    criticality,
-                    stable_json(metadata),
-                    now,
-                    now,
-                ),
-            )
+        rid = digest([kind, name, location])[:32]
+
+        self.db.execute("""
+        INSERT INTO resources
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(kind,name,location) DO UPDATE SET
+            platform=excluded.platform,
+            criticality=excluded.criticality,
+            visibility=excluded.visibility,
+            desired_state=excluded.desired_state,
+            observed_state=excluded.observed_state,
+            metadata=excluded.metadata,
+            updated_at=excluded.updated_at
+        """, (
+            rid, kind, name, platform_name, location, criticality,
+            visibility,
+            stable_json(desired or {}),
+            stable_json(observed),
+            stable_json(metadata or {}),
+            now(),
+        ))
         self.db.commit()
         return rid
 
-    def finding(
-        self,
-        source: str,
-        category: str,
-        severity: str,
-        resource_id: Optional[str],
-        title: str,
-        evidence: Dict[str, Any],
-    ) -> str:
-        fid = str(uuid.uuid4())
-        now = utcnow()
-        self.db.execute(
-            "INSERT INTO findings VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (
-                fid,
-                source,
-                category,
-                severity,
-                resource_id,
-                title,
-                stable_json(evidence),
-                "OPEN",
-                now,
-                now,
-            ),
-        )
-        self.db.commit()
-        self.evidence(category, title, evidence)
-        return fid
 
-    def decision(
-        self,
-        finding_id: Optional[str],
-        action: str,
-        risk: str,
-        payload: Dict[str, Any],
-        requires_owner: bool = False,
-        external_dependency: Optional[str] = None,
-    ) -> str:
-        did = str(uuid.uuid4())
-        status = (
-            "EXTERNAL_DEPENDENCY_REQUIRED"
-            if external_dependency
-            else "OWNER_APPROVAL_REQUIRED"
-            if requires_owner
-            else "READY"
-        )
-        self.db.execute(
-            "INSERT INTO decisions VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                did,
-                finding_id,
-                action,
-                risk,
-                int(requires_owner),
-                external_dependency,
-                stable_json(payload),
-                status,
-                utcnow(),
-            ),
-        )
-        self.db.commit()
-        return did
+class WorldModel:
+    def __init__(self, db: Database):
+        self.db = db
 
-    def set_knowledge(self, key: str, value: Any) -> None:
-        self.db.execute(
-            """
-            INSERT INTO knowledge(key,value,updated_at) VALUES(?,?,?)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value,
-                                           updated_at=excluded.updated_at
-            """,
-            (key, stable_json(value), utcnow()),
-        )
-        self.db.commit()
-
-
-class DiscoveryEngine:
-    def __init__(self, store: Store):
-        self.store = store
-
-    def filesystem(self, roots: Iterable[str]) -> List[str]:
-        discovered = []
-        signatures = {
-            ".git": "git_repository",
-            "package.json": "node_project",
-            "pyproject.toml": "python_project",
-            "requirements.txt": "python_project",
-            "docker-compose.yml": "container_stack",
-            "compose.yaml": "container_stack",
+    def host(self) -> dict[str, Any]:
+        disk = shutil.disk_usage("/")
+        state = {
+            "hostname": socket.gethostname(),
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+            "cpu_count": os.cpu_count(),
+            "load": os.getloadavg(),
+            "disk": {
+                "total": disk.total,
+                "used": disk.used,
+                "free": disk.free,
+            },
         }
+        self.db.resource(
+            "HOST", socket.gethostname(), "local",
+            state, criticality=10
+        )
+        return state
 
-        for root_raw in roots:
-            root = pathlib.Path(root_raw).expanduser()
-            if not root.exists():
+    def repositories(self) -> list[dict[str, Any]]:
+        output = []
+        for base in ("/root", "/srv", "/opt", "/var/www"):
+            p = pathlib.Path(base)
+            if not p.exists():
                 continue
 
-            for base, dirs, files in os.walk(root):
-                base_path = pathlib.Path(base)
+            try:
+                children = list(p.iterdir())
+            except PermissionError:
+                continue
 
-                if any(
-                    x in base_path.parts
-                    for x in (".cache", "node_modules", ".venv", "__pycache__")
-                ):
-                    dirs[:] = []
+            for repo in children:
+                if not repo.is_dir() or not (repo / ".git").exists():
                     continue
 
-                names = set(dirs) | set(files)
-                for marker, kind in signatures.items():
-                    if marker not in names:
-                        continue
+                state = {
+                    "branch": cmd([
+                        "git", "-C", str(repo),
+                        "branch", "--show-current"
+                    ])["stdout"].strip(),
+                    "head": cmd([
+                        "git", "-C", str(repo),
+                        "rev-parse", "HEAD"
+                    ])["stdout"].strip(),
+                    "status": cmd([
+                        "git", "-C", str(repo),
+                        "status", "--porcelain"
+                    ])["stdout"].splitlines(),
+                    "remotes": cmd([
+                        "git", "-C", str(repo),
+                        "remote", "-v"
+                    ])["stdout"].splitlines(),
+                    "tags": cmd([
+                        "git", "-C", str(repo),
+                        "tag", "--list"
+                    ])["stdout"].splitlines(),
+                }
 
-                    rid = self.store.upsert_resource(
-                        kind,
-                        base_path.name,
-                        str(base_path.resolve()),
-                        "DISCOVERED",
-                        "UNKNOWN",
-                        {
-                            "marker": marker,
-                            "path": str(base_path.resolve()),
-                        },
-                    )
-                    discovered.append(rid)
-                    break
+                self.db.resource(
+                    "GIT_REPOSITORY",
+                    repo.name,
+                    str(repo),
+                    state,
+                    platform_name=repo.name,
+                    criticality=8,
+                )
+                output.append({"name": repo.name, **state})
+        return output
 
-        return discovered
-
-    def systemd(self) -> List[str]:
+    def services(self) -> list[dict[str, Any]]:
         if not shutil.which("systemctl"):
             return []
 
-        result = run(
-            [
-                "systemctl",
-                "list-units",
-                "--type=service",
-                "--all",
-                "--no-legend",
-                "--no-pager",
-            ]
-        )
+        units = cmd([
+            "systemctl", "list-units",
+            "--type=service", "--all",
+            "--no-pager", "--no-legend"
+        ])
 
-        found = []
-        for line in result["stdout"].splitlines():
-            parts = line.split()
-            if not parts:
+        result = []
+        for line in units["stdout"].splitlines():
+            if not line.strip():
                 continue
-            name = parts[0]
-            active = parts[2] if len(parts) > 2 else "unknown"
-            sub = parts[3] if len(parts) > 3 else "unknown"
-            rid = self.store.upsert_resource(
-                "systemd_service",
+
+            name = line.split()[0]
+            show = cmd([
+                "systemctl", "show", name,
+                "--property=ActiveState,SubState,UnitFileState,FragmentPath"
+            ])
+
+            state = {}
+            for item in show["stdout"].splitlines():
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    state[k] = v
+
+            self.db.resource(
+                "SYSTEMD_SERVICE",
                 name,
-                name,
-                f"{active}/{sub}",
-                "UNKNOWN",
-                {"raw": line},
+                state.get("FragmentPath", ""),
+                state,
+                criticality=6,
             )
-            found.append(rid)
-        return found
+            result.append({"name": name, **state})
 
-    def network(self) -> List[str]:
-        result = run(["ss", "-lntup"]) if shutil.which("ss") else {"stdout": ""}
-        rid = self.store.upsert_resource(
-            "network_surface",
-            socket.gethostname(),
-            socket.gethostname(),
-            "DISCOVERED",
-            "HIGH",
-            {"listeners": result["stdout"].splitlines()},
-        )
-        return [rid]
-
-    def host(self) -> str:
-        disk = shutil.disk_usage("/")
-        metadata = {
-            "hostname": socket.gethostname(),
-            "platform": platform.platform(),
-            "python": sys.version,
-            "cpu_count": os.cpu_count(),
-            "disk_total": disk.total,
-            "disk_used": disk.used,
-            "disk_free": disk.free,
-        }
-        return self.store.upsert_resource(
-            "host",
-            socket.gethostname(),
-            "/",
-            "ACTIVE",
-            "CRITICAL",
-            metadata,
-        )
-
-    def discover(self, roots: Iterable[str]) -> Dict[str, Any]:
-        result = {
-            "host": self.host(),
-            "filesystem": self.filesystem(roots),
-            "systemd": self.systemd(),
-            "network": self.network(),
-            "time": utcnow(),
-        }
-        self.store.evidence("DISCOVERY", "sovereign-discovery", result)
         return result
 
-
-class KnowledgeGraph:
-    def __init__(self, store: Store):
-        self.store = store
-
-    def rebuild(self) -> Dict[str, Any]:
-        resources = self.store.db.execute("SELECT * FROM resources").fetchall()
-        nodes = []
-        edges = []
-
-        for row in resources:
-            node = dict(row)
-            node["metadata"] = json.loads(node["metadata"])
-            nodes.append(node)
-
-        by_locator = {
-            r["locator"]: r
-            for r in nodes
-            if r.get("locator")
+    def network(self) -> dict[str, Any]:
+        state = {
+            "addresses": cmd(["ip", "-json", "address"])
+            if shutil.which("ip") else {},
+            "routes": cmd(["ip", "-json", "route"])
+            if shutil.which("ip") else {},
+            "listeners": cmd(["ss", "-lntup"])
+            if shutil.which("ss") else {},
+            "dns": (
+                pathlib.Path("/etc/resolv.conf")
+                .read_text(errors="replace")
+                if pathlib.Path("/etc/resolv.conf").exists()
+                else ""
+            ),
         }
+        self.db.resource(
+            "NETWORK", "host-network", "local",
+            state, criticality=9
+        )
+        return state
 
-        for resource in nodes:
-            locator = resource.get("locator") or ""
-            if not locator.startswith("/"):
+    def containers(self) -> dict[str, Any]:
+        state = {}
+
+        if shutil.which("docker"):
+            state["docker"] = cmd([
+                "docker", "ps", "-a", "--no-trunc"
+            ])
+
+        if shutil.which("podman"):
+            state["podman"] = cmd([
+                "podman", "ps", "-a", "--no-trunc"
+            ])
+
+        self.db.resource(
+            "CONTAINERS", "container-runtime", "local",
+            state,
+            criticality=7,
+            visibility=(
+                "DIRECTLY_OBSERVED"
+                if state else "NOT_VISIBLE"
+            ),
+        )
+        return state
+
+    def databases(self) -> list[dict[str, Any]]:
+        found = []
+
+        for base in ("/root", "/srv", "/opt", "/var/lib", "/var/www"):
+            p = pathlib.Path(base)
+            if not p.exists():
                 continue
 
-            path = pathlib.Path(locator)
-            for parent in path.parents:
-                candidate = by_locator.get(str(parent))
-                if candidate:
-                    edge = {
-                        "source": resource["id"],
-                        "relation": "DEPENDS_ON_PARENT",
-                        "target": candidate["id"],
+            try:
+                for dbfile in p.glob("**/*.sqlite3"):
+                    if len(found) >= 1000:
+                        break
+                    try:
+                        st = dbfile.stat()
+                    except Exception:
+                        continue
+
+                    state = {
+                        "size": st.st_size,
+                        "mtime": st.st_mtime,
                     }
-                    edges.append(edge)
-                    self.store.db.execute(
-                        """
-                        INSERT OR IGNORE INTO relations
-                        VALUES(?,?,?,?)
-                        """,
-                        (
-                            edge["source"],
-                            edge["relation"],
-                            edge["target"],
-                            "{}",
-                        ),
+
+                    self.db.resource(
+                        "SQLITE",
+                        dbfile.name,
+                        str(dbfile),
+                        state,
+                        criticality=8,
                     )
-                    break
+                    found.append({
+                        "path": str(dbfile),
+                        **state,
+                    })
+            except (PermissionError, OSError):
+                continue
 
-        self.store.db.commit()
+        return found
 
-        graph = {
-            "generated_at": utcnow(),
-            "nodes": nodes,
-            "edges": edges,
-            "hash": digest({"nodes": nodes, "edges": edges}),
+    def schedulers(self) -> dict[str, Any]:
+        state = {
+            "crontab": (
+                pathlib.Path("/etc/crontab")
+                .read_text(errors="replace")
+                if pathlib.Path("/etc/crontab").exists()
+                else ""
+            ),
+            "cron_d": [],
+            "systemd_timers": cmd([
+                "systemctl", "list-timers",
+                "--all", "--no-pager"
+            ]) if shutil.which("systemctl") else {},
         }
-        self.store.set_knowledge("knowledge_graph", graph)
-        self.store.evidence("KNOWLEDGE_GRAPH", "global", graph)
-        return graph
 
+        cron_d = pathlib.Path("/etc/cron.d")
+        if cron_d.exists():
+            for f in cron_d.iterdir():
+                if f.is_file():
+                    state["cron_d"].append({
+                        "name": f.name,
+                        "sha256": digest(f.read_bytes()),
+                    })
 
-class DigitalTwin:
-    def __init__(self, store: Store):
-        self.store = store
+        self.db.resource(
+            "SCHEDULER", "schedulers", "local",
+            state, criticality=6
+        )
+        return state
 
-    def build(self) -> Dict[str, Any]:
-        resources = [
-            dict(r)
-            for r in self.store.db.execute(
-                "SELECT * FROM resources ORDER BY kind,name"
+    def ai(self) -> dict[str, Any]:
+        base = os.environ.get(
+            "OLLAMA_BASE_URL",
+            "http://127.0.0.1:11434"
+        ).rstrip("/")
+
+        state = {
+            "ollama_base": base,
+            "available": False,
+            "models": [],
+        }
+
+        try:
+            with urllib.request.urlopen(
+                base + "/api/tags", timeout=3
+            ) as r:
+                body = json.loads(r.read())
+                state["available"] = True
+                state["models"] = body.get("models", [])
+        except Exception as exc:
+            state["error"] = repr(exc)
+
+        self.db.resource(
+            "AI_PROVIDER",
+            "ollama",
+            base,
+            state,
+            criticality=7,
+            visibility=(
+                "DIRECTLY_OBSERVED"
+                if state["available"]
+                else "NOT_VISIBLE"
+            ),
+        )
+        return state
+
+    def physical(self) -> dict[str, Any]:
+        capabilities = {
+            "thermal": pathlib.Path("/sys/class/thermal").exists(),
+            "hwmon": pathlib.Path("/sys/class/hwmon").exists(),
+            "power_supply": pathlib.Path("/sys/class/power_supply").exists(),
+            "edac_ecc": pathlib.Path("/sys/devices/system/edac").exists(),
+            "smart": bool(shutil.which("smartctl")),
+            "nvme": bool(shutil.which("nvme")),
+            "sensors": bool(shutil.which("sensors")),
+            "ipmi": bool(shutil.which("ipmitool")),
+            "redfish": bool(os.environ.get("MAJD_REDFISH_ENDPOINT")),
+            "ups": bool(shutil.which("upsc")),
+        }
+
+        for name, available in capabilities.items():
+            self.db.resource(
+                "PHYSICAL_CAPABILITY",
+                name,
+                "local",
+                {"available": available},
+                visibility=(
+                    "DIRECTLY_OBSERVED"
+                    if available else "NOT_VISIBLE"
+                ),
             )
-        ]
 
-        findings = [
-            dict(r)
-            for r in self.store.db.execute(
-                "SELECT * FROM findings WHERE status='OPEN'"
-            )
-        ]
+        return capabilities
 
-        twin = {
-            "generated_at": utcnow(),
-            "owner": OWNER,
-            "version": VERSION,
-            "resources": resources,
-            "open_findings": findings,
-            "execution_path": EXECUTION_PATH,
-            "state_hash": digest(
-                {
-                    "resources": resources,
-                    "findings": findings,
-                }
+    def discover(self) -> dict[str, Any]:
+        state = {
+            "host": self.host(),
+            "repositories": self.repositories(),
+            "services": self.services(),
+            "network": self.network(),
+            "containers": self.containers(),
+            "databases": self.databases(),
+            "schedulers": self.schedulers(),
+            "ai": self.ai(),
+            "physical": self.physical(),
+        }
+        self.db.evidence("WORLD_MODEL", "discovery", state)
+        return state
+
+
+class Constitution:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def install(self) -> str:
+        body = {
+            "authority": OWNER,
+            "primary_files": PRIMARY_FILES,
+            "manual_file_05_forbidden": True,
+            "real_execution": True,
+            "fake_success_forbidden": True,
+            "todo_pass_as_completion_forbidden": True,
+            "scan_report_only_forbidden": True,
+            "latest_equals_install_forbidden": True,
+            "independent_verification_required": True,
+            "critical_workflow_verification_required": True,
+            "backup_before_mutation": True,
+            "restore_verification_required": True,
+            "rollback_required": True,
+            "legal_uncertainty": "LEGAL_REVIEW_REQUIRED",
+            "external_reality":
+                "EXTERNAL_DEPENDENCY_REQUIRED",
+            "physical_visibility": VISIBILITY,
+            "physical_chain": PHYSICAL_CHAIN,
+            "sector_overlays": SECTOR_OVERLAYS,
+            "lifecycle": LIFECYCLE,
+            "hardware_reality_rule": (
+                "Never claim a physical capability or healthy "
+                "physical state without direct telemetry, provider "
+                "evidence or contractual evidence."
+            ),
+            "cyber_physical_safety": (
+                "LLM MAY REASON — SAFETY CONTROLLER "
+                "ENFORCES PHYSICAL LIMITS"
             ),
         }
 
-        self.store.set_knowledge("digital_twin", twin)
-        self.store.evidence("DIGITAL_TWIN", "global", twin)
-        return twin
+        previous = self.db.db.execute("""
+            SELECT MAX(version) FROM constitutions
+            WHERE scope='GLOBAL'
+        """).fetchone()[0]
 
+        version = int(previous or 0) + 1
+        cid = str(uuid.uuid4())
 
-GLOBAL_CONSTITUTION = {
-    "supreme_authority": OWNER,
-    "no_fake_success": True,
-    "backup_before_destructive_change": True,
-    "independent_verification_required": True,
-    "critical_workflow_verification_required_for_launch": True,
-    "external_credentials_cannot_be_invented": True,
-    "secrets_must_not_enter_logs_or_evidence": True,
-    "least_privilege": True,
-    "zero_trust": True,
-    "rollback_required_for_high_risk_change": True,
-    "evidence_required": True,
-    "file_numbers": ["01", "02", "03", "04"],
-    "file_05_forbidden": True,
-}
+        self.db.db.execute(
+            "UPDATE constitutions SET active=0 WHERE scope='GLOBAL'"
+        )
 
+        self.db.db.execute("""
+            INSERT INTO constitutions
+            VALUES(?,?,?,?,?,?,?,?)
+        """, (
+            cid,
+            "GLOBAL",
+            None,
+            version,
+            stable_json(body),
+            digest(body),
+            1,
+            now(),
+        ))
+        self.db.db.commit()
 
-class ConstitutionEngine:
-    def __init__(self, store: Store):
-        self.store = store
+        self.db.evidence(
+            "CONSTITUTION",
+            "GLOBAL",
+            {"id": cid, "version": version, "body": body},
+        )
+        return cid
 
-    def install(self) -> None:
-        self.store.set_knowledge("global_constitution", GLOBAL_CONSTITUTION)
+    def platform(
+        self,
+        platform_name: str,
+        body: dict[str, Any],
+    ) -> str:
+        previous = self.db.db.execute("""
+            SELECT MAX(version) FROM constitutions
+            WHERE scope='PLATFORM' AND platform=?
+        """, (platform_name,)).fetchone()[0]
 
-    def platform_constitution(self, resource: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "resource_id": resource["id"],
-            "resource_kind": resource["kind"],
-            "owner": OWNER,
-            "production_truth_required": True,
-            "backup_before_destructive_change": True,
-            "independent_verification": True,
-            "critical_workflows_required": True,
-            "secrets": "REFERENCE_ONLY",
-            "owner_gate": [
-                "LEGAL_SIGNATURE",
-                "IDENTITY_VERIFICATION",
-                "EXTERNAL_ACCOUNT_CREATION",
-                "NON_DELEGABLE_APPROVAL",
-            ],
-        }
+        version = int(previous or 0) + 1
+        cid = str(uuid.uuid4())
+
+        self.db.db.execute("""
+            UPDATE constitutions SET active=0
+            WHERE scope='PLATFORM' AND platform=?
+        """, (platform_name,))
+
+        self.db.db.execute("""
+            INSERT INTO constitutions
+            VALUES(?,?,?,?,?,?,?,?)
+        """, (
+            cid,
+            "PLATFORM",
+            platform_name,
+            version,
+            stable_json(body),
+            digest(body),
+            1,
+            now(),
+        ))
+        self.db.db.commit()
+        return cid
 
 
 class PolicyEngine:
-    def __init__(self, store: Store):
-        self.store = store
+    def __init__(self, db: Database):
+        self.db = db
 
-    def seed(self) -> None:
-        rules = [
-            (
-                "GLOBAL",
-                "NO_FAKE_SUCCESS",
-                "ENFORCE",
-                {"require_evidence": True},
-            ),
-            (
-                "GLOBAL",
-                "BACKUP_BEFORE_DESTRUCTIVE_CHANGE",
-                "ENFORCE",
-                {"backup_required": True},
-            ),
-            (
-                "GLOBAL",
-                "INDEPENDENT_VERIFY",
-                "ENFORCE",
-                {"required": True},
-            ),
-            (
-                "GLOBAL",
-                "CRITICAL_WORKFLOW_BEFORE_LAUNCH",
-                "ENFORCE",
-                {"required": True},
-            ),
-            (
-                "GLOBAL",
-                "NO_SECRET_LOGGING",
-                "ENFORCE",
-                {"redaction_required": True},
-            ),
-        ]
+    def set(
+        self,
+        name: str,
+        scope: str,
+        body: dict[str, Any],
+    ) -> None:
+        row = self.db.db.execute(
+            "SELECT version FROM policies WHERE name=?",
+            (name,),
+        ).fetchone()
 
-        for scope, name, mode, rule in rules:
-            pid = digest([scope, name])
-            self.store.db.execute(
-                """
-                INSERT INTO policies
-                VALUES(?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET
-                    version=excluded.version,
-                    mode=excluded.mode,
-                    rule=excluded.rule,
-                    enabled=excluded.enabled,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    pid,
-                    scope,
-                    name,
-                    1,
-                    mode,
-                    stable_json(rule),
-                    1,
-                    utcnow(),
-                ),
-            )
-        self.store.db.commit()
+        version = int(row["version"]) + 1 if row else 1
+        pid = digest(name)[:32]
 
-    def evaluate(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        violations = []
+        self.db.db.execute("""
+        INSERT INTO policies VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(name) DO UPDATE SET
+            scope=excluded.scope,
+            body=excluded.body,
+            version=excluded.version,
+            active=1,
+            updated_at=excluded.updated_at
+        """, (
+            pid, name, scope,
+            stable_json(body), version, 1, now()
+        ))
+        self.db.db.commit()
 
-        if action.get("destructive") and not action.get("backup"):
-            violations.append("BACKUP_REQUIRED")
+    def evaluate(
+        self,
+        policy_name: str,
+        subject: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        row = self.db.db.execute("""
+            SELECT * FROM policies
+            WHERE name=? AND active=1
+        """, (policy_name,)).fetchone()
 
-        if action.get("launch") and not action.get("critical_workflow_verification"):
-            violations.append("CRITICAL_WORKFLOW_VERIFICATION_REQUIRED")
+        if not row:
+            return {
+                "result": "DENIED",
+                "reasons": ["POLICY_NOT_FOUND"],
+            }
 
-        if action.get("declared_success") and not action.get("independent_verification"):
-            violations.append("INDEPENDENT_VERIFICATION_REQUIRED")
+        policy = json.loads(row["body"])
+        reasons = []
+        result = "APPROVED"
 
-        if action.get("contains_secret"):
-            violations.append("SECRET_MUST_NOT_BE_LOGGED")
+        for key, expected in policy.get("required", {}).items():
+            if context.get(key) != expected:
+                result = "DENIED"
+                reasons.append(
+                    f"REQUIRED:{key}={expected!r}"
+                )
 
-        return {
-            "allowed": not violations,
-            "violations": violations,
-            "evaluated_at": utcnow(),
-        }
+        for key, forbidden in policy.get("forbidden", {}).items():
+            if context.get(key) == forbidden:
+                result = "DENIED"
+                reasons.append(
+                    f"FORBIDDEN:{key}={forbidden!r}"
+                )
+
+        if context.get("legal_uncertainty"):
+            result = "LEGAL_REVIEW_REQUIRED"
+            reasons.append("UNRESOLVED_LEGAL_INTERPRETATION")
+
+        if context.get("external_dependency_missing"):
+            result = "EXTERNAL_DEPENDENCY_REQUIRED"
+            reasons.append("REAL_EXTERNAL_DEPENDENCY_MISSING")
+
+        if context.get("owner_approval_required"):
+            result = "OWNER_ACTION_REQUIRED"
+            reasons.append("SUPREME_OWNER_APPROVAL_REQUIRED")
+
+        rid = str(uuid.uuid4())
+
+        self.db.db.execute("""
+            INSERT INTO policy_results
+            VALUES(?,?,?,?,?,?,?)
+        """, (
+            rid,
+            policy_name,
+            subject,
+            result,
+            stable_json(reasons),
+            stable_json(context),
+            now(),
+        ))
+        self.db.db.commit()
+
+        return {"result": result, "reasons": reasons}
 
 
-class RegulatoryEngine:
-    """
-    Regulatory truth is evidence-driven.
+class RegulatoryBrain:
+    def __init__(self, db: Database):
+        self.db = db
 
-    This engine does not invent legal requirements.
-    A rule becomes enforceable only after a source and applicability
-    record have been stored.
-    """
-
-    def __init__(self, store: Store):
-        self.store = store
-
-    def register_rule(
+    def register(
         self,
         jurisdiction: str,
-        subject: str,
-        source: str,
-        requirements: Dict[str, Any],
-        applicability: Dict[str, Any],
-        effective_from: Optional[str] = None,
-        deadline: Optional[str] = None,
+        authority: str,
+        title: str,
+        url: str,
+        source_type: str,
+        official_domains: list[str],
     ) -> str:
-        rid = digest(
-            [
-                jurisdiction,
-                subject,
-                source,
-                effective_from,
-                deadline,
-                requirements,
-            ]
+        sid = digest(url)[:32]
+
+        self.db.db.execute("""
+        INSERT INTO official_sources
+        VALUES(?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(url) DO UPDATE SET
+            jurisdiction=excluded.jurisdiction,
+            authority=excluded.authority,
+            title=excluded.title,
+            source_type=excluded.source_type,
+            official_domains=excluded.official_domains
+        """, (
+            sid,
+            jurisdiction,
+            authority,
+            title,
+            url,
+            source_type,
+            stable_json(official_domains),
+            None,
+            None,
+        ))
+        self.db.db.commit()
+        return sid
+
+    def verify_domain(
+        self,
+        url: str,
+        allowed: list[str],
+    ) -> bool:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").lower()
+
+        if parsed.scheme != "https":
+            return False
+
+        return any(
+            host == domain.lower()
+            or host.endswith("." + domain.lower())
+            for domain in allowed
         )
 
-        self.store.db.execute(
-            """
-            INSERT OR REPLACE INTO regulatory_rules
-            VALUES(?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                rid,
-                jurisdiction,
-                subject,
-                source,
-                effective_from,
-                deadline,
-                stable_json(applicability),
-                stable_json(requirements),
-                utcnow(),
-            ),
+    def fetch(self, source_id: str) -> dict[str, Any]:
+        row = self.db.db.execute("""
+            SELECT * FROM official_sources WHERE id=?
+        """, (source_id,)).fetchone()
+
+        if not row:
+            raise KeyError(source_id)
+
+        allowed = json.loads(row["official_domains"])
+        official = self.verify_domain(row["url"], allowed)
+
+        if not official:
+            result = {
+                "state": "DENIED",
+                "reason": "OFFICIAL_DOMAIN_VERIFICATION_FAILED",
+            }
+            self.db.evidence(
+                "REGULATORY_SOURCE_REJECTED",
+                row["title"],
+                result,
+            )
+            return result
+
+        request = urllib.request.Request(
+            row["url"],
+            headers={
+                "User-Agent":
+                    f"MAJD-Maintenance-Regulatory/{VERSION}"
+            },
         )
-        self.store.db.commit()
-        return rid
 
-    def deadlines(self, days: int = 90) -> List[Dict[str, Any]]:
-        now = dt.datetime.now(dt.timezone.utc)
-        limit = now + dt.timedelta(days=days)
-        output = []
-
-        for row in self.store.db.execute(
-            "SELECT * FROM regulatory_rules WHERE deadline IS NOT NULL"
-        ):
-            try:
-                deadline = dt.datetime.fromisoformat(row["deadline"])
-                if deadline.tzinfo is None:
-                    deadline = deadline.replace(tzinfo=dt.timezone.utc)
-                if now <= deadline <= limit:
-                    output.append(dict(row))
-            except ValueError:
-                continue
-
-        return output
-
-    def evidence_matrix(self) -> Dict[str, Any]:
-        rules = [
-            dict(r)
-            for r in self.store.db.execute(
-                "SELECT * FROM regulatory_rules"
+        try:
+            with urllib.request.urlopen(
+                request, timeout=30
+            ) as response:
+                body = response.read(20 * 1024 * 1024)
+                headers = dict(response.headers.items())
+        except Exception as exc:
+            result = {
+                "state": "FETCH_FAILED",
+                "error": repr(exc),
+            }
+            self.db.evidence(
+                "REGULATORY_FETCH_FAILURE",
+                row["title"],
+                result,
             )
-        ]
+            return result
 
-        evidence = [
-            dict(r)
-            for r in self.store.db.execute(
-                "SELECT id,category,subject,sha256,created_at FROM evidence"
-            )
-        ]
+        new_hash = digest(body)
+        old_hash = row["last_hash"]
+        snapshot_id = str(uuid.uuid4())
+        body_path = REGULATORY / f"{snapshot_id}.bin"
+        body_path.write_bytes(body)
 
-        matrix = {
-            "generated_at": utcnow(),
-            "rules": rules,
-            "evidence": evidence,
+        self.db.db.execute("""
+            INSERT INTO source_snapshots
+            VALUES(?,?,?,?,?,?,?)
+        """, (
+            snapshot_id,
+            source_id,
+            new_hash,
+            str(body_path),
+            stable_json(headers),
+            1,
+            now(),
+        ))
+
+        self.db.db.execute("""
+            UPDATE official_sources
+            SET last_hash=?,last_checked=?
+            WHERE id=?
+        """, (new_hash, now(), source_id))
+
+        changed = bool(old_hash and old_hash != new_hash)
+
+        if changed:
+            self.db.db.execute("""
+                INSERT INTO regulatory_changes
+                VALUES(?,?,?,?,?,?)
+            """, (
+                str(uuid.uuid4()),
+                source_id,
+                old_hash,
+                new_hash,
+                1,
+                now(),
+            ))
+
+        self.db.db.commit()
+
+        result = {
+            "official_verified": True,
+            "changed": changed,
+            "old_hash": old_hash,
+            "new_hash": new_hash,
+            "snapshot": str(body_path),
         }
 
-        self.store.evidence(
-            "COMPLIANCE_EVIDENCE_MATRIX",
-            "global",
-            matrix,
+        self.db.evidence(
+            "REGULATORY_FETCH",
+            row["title"],
+            result,
         )
-        return matrix
+        return result
+
+    def applicability(
+        self,
+        source_id: str,
+        platform_name: str,
+        profile: dict[str, Any],
+    ) -> dict[str, Any]:
+        source = self.db.db.execute("""
+            SELECT * FROM official_sources WHERE id=?
+        """, (source_id,)).fetchone()
+
+        if not source:
+            raise KeyError(source_id)
+
+        countries = {
+            str(x).upper()
+            for x in profile.get("countries", [])
+        }
+        sectors = {
+            str(x).upper()
+            for x in profile.get("sectors", [])
+        }
+
+        jurisdiction = source["jurisdiction"].upper()
+        reasons = []
+
+        if jurisdiction in {"GLOBAL", "INTERNATIONAL"}:
+            reasons.append("GLOBAL_SOURCE")
+        elif jurisdiction in countries:
+            reasons.append("JURISDICTION_MATCH")
+
+        title_upper = source["title"].upper()
+        matched = [
+            sector for sector in sectors
+            if sector.replace("_", " ") in title_upper
+        ]
+
+        if matched:
+            reasons.append(
+                "SECTOR_MATCH:" + ",".join(matched)
+            )
+
+        impact = {
+            "privacy": bool(profile.get("data")),
+            "cross_border": bool(
+                profile.get("cross_border_data")
+            ),
+            "ai": bool(profile.get("ai")),
+            "payments": bool(profile.get("payments")),
+            "children": "CHILDREN" in sectors,
+            "commerce": "COMMERCE" in sectors,
+            "hosting_cloud": "HOSTING_CLOUD" in sectors,
+            "email": "EMAIL_COMMUNICATIONS" in sectors,
+        }
+
+        risk_score = min(
+            100,
+            15
+            + 10 * len(reasons)
+            + 8 * sum(bool(v) for v in impact.values())
+        )
+
+        if not reasons:
+            result = "NOT_APPLICABLE"
+            review = "COMPLETED"
+        elif source["source_type"].upper() in {
+            "LAW",
+            "REGULATION",
+            "CONTROL",
+            "STANDARD",
+            "OFFICIAL_GUIDANCE",
+        }:
+            result = "APPLICABILITY_CANDIDATE"
+            review = "REQUIRES_REQUIREMENT_EXTRACTION"
+        else:
+            result = "LEGAL_REVIEW_REQUIRED"
+            review = "LEGAL_REVIEW_REQUIRED"
+
+        record = {
+            "result": result,
+            "reasons": reasons,
+            "impact": impact,
+            "risk": {"score": risk_score},
+            "review_status": review,
+        }
+
+        self.db.db.execute("""
+            INSERT INTO applicability
+            VALUES(?,?,?,?,?,?,?,?,?)
+        """, (
+            str(uuid.uuid4()),
+            source_id,
+            platform_name,
+            result,
+            stable_json(reasons),
+            stable_json(impact),
+            stable_json({"score": risk_score}),
+            review,
+            now(),
+        ))
+        self.db.db.commit()
+
+        return record
 
 
 class DataGovernance:
-    SECRET_PATTERN = re.compile(
-        r"(password|passwd|secret|token|api[_-]?key|private[_-]?key)",
-        re.I,
-    )
+    def __init__(self, db: Database):
+        self.db = db
 
-    def __init__(self, store: Store):
-        self.store = store
+    @staticmethod
+    def classification(name: str) -> str:
+        n = name.lower()
 
-    def inspect_environment_names(self) -> Dict[str, Any]:
-        names = sorted(os.environ.keys())
-        sensitive = [
-            name
-            for name in names
-            if self.SECRET_PATTERN.search(name)
+        if any(x in n for x in (
+            "password", "secret", "private_key",
+            "access_token", "refresh_token"
+        )):
+            return "SECRET"
+
+        if any(x in n for x in (
+            "card", "payment", "invoice",
+            "transaction", "bank"
+        )):
+            return "FINANCIAL"
+
+        if any(x in n for x in (
+            "email", "phone", "address",
+            "location", "birth", "name",
+            "device_id", "ip_address"
+        )):
+            return "PERSONAL"
+
+        return "INTERNAL"
+
+    def inspect_sqlite(
+        self,
+        platform_name: str,
+        path: pathlib.Path,
+    ) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+
+        db = sqlite3.connect(
+            f"file:{path}?mode=ro",
+            uri=True,
+        )
+
+        tables = [
+            row[0]
+            for row in db.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table'
+            """)
         ]
 
-        result = {
-            "environment_variable_count": len(names),
-            "sensitive_variable_names": sensitive,
-            "values_collected": False,
+        result = []
+
+        for table in tables:
+            safe = table.replace('"', '""')
+            columns = db.execute(
+                f'PRAGMA table_info("{safe}")'
+            ).fetchall()
+
+            column_data = [{
+                "name": c[1],
+                "type": c[2],
+                "classification":
+                    self.classification(c[1]),
+            } for c in columns]
+
+            classes = {
+                x["classification"]
+                for x in column_data
+            }
+
+            overall = (
+                "SECRET" if "SECRET" in classes
+                else "FINANCIAL" if "FINANCIAL" in classes
+                else "PERSONAL" if "PERSONAL" in classes
+                else "INTERNAL"
+            )
+
+            quality = {
+                "accuracy": "REQUIRES_DOMAIN_RULES",
+                "completeness": "MEASURABLE",
+                "consistency": "MEASURABLE",
+                "freshness": "MEASURABLE",
+                "uniqueness": "MEASURABLE",
+                "traceability": True,
+                "source_of_truth_required": True,
+                "reconciliation_required": (
+                    overall == "FINANCIAL"
+                ),
+            }
+
+            asset_id = str(uuid.uuid4())
+
+            self.db.db.execute("""
+                INSERT INTO data_assets
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                asset_id,
+                platform_name,
+                f"{path.name}:{table}",
+                overall,
+                OWNER,
+                "PLATFORM_CONSTITUTION_REQUIRED",
+                None,
+                "PLATFORM_CONSTITUTION_REQUIRED",
+                "DISCOVERED_LOCATION",
+                (
+                    "TRANSFER_BASIS_REGISTRY_REQUIRED"
+                    if overall in {"PERSONAL", "FINANCIAL"}
+                    else "NOT_APPLICABLE"
+                ),
+                "RETENTION_POLICY_REQUIRED",
+                "DELETION_PROPAGATION_REQUIRED",
+                str(path),
+                stable_json({"columns": column_data}),
+                stable_json(quality),
+                stable_json([]),
+                now(),
+            ))
+
+            result.append({
+                "table": table,
+                "classification": overall,
+                "columns": column_data,
+                "quality": quality,
+            })
+
+        db.close()
+        self.db.db.commit()
+        return result
+
+
+class AIGovernance:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def register(
+        self,
+        platform_name: str,
+        kind: str,
+        name: str,
+        provider: Optional[str],
+        model: Optional[str],
+        provenance: dict[str, Any],
+        permissions: dict[str, Any],
+        tools: list[str],
+    ) -> str:
+        aid = str(uuid.uuid4())
+
+        security = {
+            "prompt_injection_defense": True,
+            "data_leakage_prevention": True,
+            "secret_exfiltration_forbidden": True,
+            "tool_boundary_enforced": True,
+            "owner_boundary": OWNER,
+            "unsafe_shell_forbidden": True,
+            "generated_code_requires_verification": True,
+            "destructive_actions_policy_gated": True,
+            "untrusted_context_not_authoritative": True,
         }
 
-        self.store.evidence(
-            "DATA_GOVERNANCE",
-            "environment-secret-reference-inventory",
+        evaluations = {
+            "functional": "REQUIRED",
+            "security": "REQUIRED",
+            "regression": "REQUIRED",
+            "red_team": "REQUIRED_WHEN_APPLICABLE",
+            "drift": "CONTINUOUS",
+        }
+
+        self.db.db.execute("""
+            INSERT INTO ai_assets
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            aid,
+            platform_name,
+            kind,
+            name,
+            provider,
+            model,
+            stable_json(provenance),
+            stable_json(permissions),
+            stable_json(tools),
+            stable_json(evaluations),
+            stable_json(security),
+            "MONITORED",
+            now(),
+        ))
+        self.db.db.commit()
+        return aid
+
+
+class QualityManagement:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def product_gate(
+        self,
+        platform_name: str,
+        checks: dict[str, bool],
+    ) -> dict[str, Any]:
+        required = (
+            "backend",
+            "ui",
+            "api",
+            "permissions",
+            "persistence",
+            "critical_workflows",
+            "error_handling",
+            "security",
+            "independent_verification",
+            "deployment",
+            "post_launch_monitoring",
+        )
+
+        missing = [
+            key for key in required
+            if not checks.get(key, False)
+        ]
+
+        result = (
+            "READY_FOR_LAUNCH"
+            if not missing
+            else "NOT_READY_FOR_LAUNCH"
+        )
+
+        gate_id = str(uuid.uuid4())
+
+        self.db.db.execute("""
+            INSERT INTO quality_gates
+            VALUES(?,?,?,?,?,?,?)
+        """, (
+            gate_id,
+            platform_name,
+            "MAJD_PRODUCT_QUALITY_GATE",
+            stable_json(checks),
+            result,
+            stable_json({"missing": missing}),
+            now(),
+        ))
+        self.db.db.commit()
+
+        return {
+            "result": result,
+            "missing": missing,
+        }
+
+    def service(
+        self,
+        platform_name: str,
+        service: str,
+        criticality: int,
+        requirements: dict[str, Any],
+        dependencies: list[str],
+        continuity: dict[str, Any],
+    ) -> str:
+        sid = str(uuid.uuid4())
+
+        self.db.db.execute("""
+            INSERT INTO service_catalog
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            sid,
+            platform_name,
+            service,
+            OWNER,
+            criticality,
+            stable_json(requirements),
+            stable_json(dependencies),
+            requirements.get("availability_target"),
+            requirements.get("latency_target_ms"),
+            stable_json(continuity),
+            now(),
+        ))
+        self.db.db.commit()
+        return sid
+
+    def customer_journey(
+        self,
+        platform_name: str,
+        name: str,
+        steps: list[dict[str, Any]],
+        expected_result: str,
+        critical: bool = True,
+    ) -> str:
+        jid = str(uuid.uuid4())
+
+        self.db.db.execute("""
+            INSERT INTO customer_journeys
+            VALUES(?,?,?,?,?,?,?)
+        """, (
+            jid,
+            platform_name,
+            name,
+            stable_json(steps),
+            int(critical),
+            expected_result,
+            now(),
+        ))
+        self.db.db.commit()
+        return jid
+
+    def innovation(
+        self,
+        platform_name: str,
+        idea: str,
+        value: dict[str, Any],
+        risk: dict[str, Any],
+        compatibility: dict[str, Any],
+        priority: int,
+    ) -> str:
+        iid = str(uuid.uuid4())
+
+        self.db.db.execute("""
+            INSERT INTO innovation
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+        """, (
+            iid,
+            platform_name,
+            idea,
+            stable_json(value),
+            stable_json(risk),
+            stable_json(compatibility),
+            priority,
+            "DISCOVERED",
+            stable_json({}),
+            now(),
+        ))
+        self.db.db.commit()
+        return iid
+
+
+class PhysicalIntelligence:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def register(
+        self,
+        asset_type: str,
+        name: str,
+        *,
+        platform_name: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        visibility: str = "NOT_VISIBLE",
+        desired: Any = None,
+        observed: Any = None,
+        supplier: Optional[str] = None,
+        model: Optional[str] = None,
+        serial: Optional[str] = None,
+        firmware: Optional[str] = None,
+        warranty: Optional[str] = None,
+        eol: Optional[str] = None,
+        replacement_lead_time: Optional[str] = None,
+    ) -> str:
+        if visibility not in VISIBILITY:
+            raise ValueError("invalid visibility")
+
+        aid = str(uuid.uuid4())
+
+        self.db.db.execute("""
+            INSERT INTO physical_assets
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            aid,
+            platform_name,
+            asset_type,
+            name,
+            parent_id,
+            visibility,
+            stable_json(desired or {}),
+            stable_json(observed or {}),
+            supplier,
+            model,
+            serial,
+            firmware,
+            warranty,
+            eol,
+            replacement_lead_time,
+            now(),
+        ))
+        self.db.db.commit()
+        return aid
+
+    def capacity_gate(
+        self,
+        platform_name: str,
+        requirements: dict[str, float],
+        observed: dict[str, float],
+    ) -> dict[str, Any]:
+        checks = {}
+        allowed = True
+
+        for key, required in requirements.items():
+            available = float(observed.get(key, 0))
+            ok = available >= float(required)
+            checks[key] = {
+                "required": required,
+                "available": available,
+                "ok": ok,
+            }
+            allowed = allowed and ok
+
+        return {
+            "allowed": allowed,
+            "checks": checks,
+            "rule": (
+                "Workload placement is denied when physical "
+                "or infrastructure headroom is insufficient."
+            ),
+        }
+
+
+class Planner:
+    def __init__(
+        self,
+        db: Database,
+        policy: PolicyEngine,
+    ):
+        self.db = db
+        self.policy = policy
+
+    def plan(
+        self,
+        platform_name: str,
+        objective: str,
+    ) -> str:
+        resources = [
+            dict(row)
+            for row in self.db.db.execute("""
+                SELECT * FROM resources
+                WHERE platform=? OR platform IS NULL
+            """, (platform_name,))
+        ]
+
+        lower = objective.lower()
+        risk = 10
+
+        high_risk = (
+            "delete",
+            "drop",
+            "database",
+            "migration",
+            "payment",
+            "dns",
+            "tls",
+            "certificate",
+            "firewall",
+            "identity",
+            "secret",
+            "production",
+            "firmware",
+            "power",
+            "storage",
+            "decommission",
+        )
+
+        matched = [
+            item for item in high_risk
+            if item in lower
+        ]
+
+        risk += len(matched) * 8
+        risk += min(
+            30,
+            sum(
+                1 for resource in resources
+                if resource["criticality"] >= 8
+            ) * 4,
+        )
+        risk = min(risk, 100)
+
+        plan_id = str(uuid.uuid4())
+
+        discovery = {
+            "resource_count": len(resources),
+            "knowledge_graph_required": True,
+            "critical_workflows_required": True,
+            "data_flows_required": True,
+            "trust_boundaries_required": True,
+            "failure_domains_required": True,
+        }
+
+        applicability = {
+            "regulatory_check_required": True,
+            "sector_overlay_required": True,
+            "country_overlay_required": True,
+            "data_residency_required": True,
+        }
+
+        impact = {
+            "blast_radius_required": True,
+            "dependencies_required": True,
+            "business_impact_required": True,
+            "physical_impact_required": True,
+        }
+
+        build = {
+            "refactor_allowed": True,
+            "rebuild_allowed": True,
+            "modernization_allowed": True,
+            "dependency_upgrade_allowed": True,
+            "migration_allowed": True,
+            "architecture_improvement_allowed": True,
+            "performance_optimization_allowed": True,
+            "security_hardening_required": True,
+            "ui_ux_allowed": True,
+            "database_api_evolution_allowed": True,
+        }
+
+        security = {
+            "zero_trust": True,
+            "supply_chain": True,
+            "secret_check": True,
+            "ai_tool_boundary": True,
+            "file_integrity": True,
+            "vulnerability_check": True,
+        }
+
+        verification = {
+            "independent": True,
+            "critical_workflow": True,
+            "product_quality": True,
+            "data_quality": True,
+            "security": True,
+            "restore": True,
+            "production_observation": True,
+        }
+
+        deployment = {
+            "progressive": True,
+            "maintenance_window_when_required": True,
+            "dependency_ordering": True,
+            "go_no_go_evidence": True,
+        }
+
+        rollback = {
+            "automatic_on_failed_verification": True,
+            "backup_reference_required": True,
+            "restore_verification_required": True,
+        }
+
+        self.db.db.execute("""
+            INSERT INTO plans
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            plan_id,
+            platform_name,
+            objective,
+            stable_json(discovery),
+            stable_json(applicability),
+            stable_json(impact),
+            stable_json({
+                "score": risk,
+                "matched": matched,
+            }),
+            stable_json({
+                "required": True,
+                "restore_verification": True,
+            }),
+            stable_json(build),
+            stable_json(security),
+            stable_json(verification),
+            stable_json(deployment),
+            stable_json(rollback),
+            "PLANNED",
+            now(),
+        ))
+        self.db.db.commit()
+
+        self.db.evidence(
+            "ENGINEERING_PLAN",
+            plan_id,
+            {
+                "platform": platform_name,
+                "objective": objective,
+                "risk": risk,
+            },
+        )
+        return plan_id
+
+    def queue(
+        self,
+        platform_name: str,
+        action: str,
+        payload: dict[str, Any],
+        risk: int,
+        owner_required: bool = False,
+    ) -> str:
+        did = str(uuid.uuid4())
+
+        state = (
+            "OWNER_ACTION_REQUIRED"
+            if owner_required
+            else "QUEUED"
+        )
+
+        self.db.db.execute("""
+            INSERT INTO decisions
+            VALUES(?,?,?,?,?,?,?,?,?)
+        """, (
+            did,
+            platform_name,
+            action,
+            stable_json(payload),
+            OWNER,
+            risk,
+            int(owner_required),
+            state,
+            now(),
+        ))
+        self.db.db.commit()
+
+        if not owner_required:
+            (QUEUE / f"executor-{did}.json").write_text(
+                json.dumps({
+                    "decision_id": did,
+                    "platform": platform_name,
+                    "action": action,
+                    "payload": payload,
+                    "risk": risk,
+                    "authority": OWNER,
+                }, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        return did
+
+
+class Mastermind:
+    def __init__(self):
+        self.db = Database()
+        self.world = WorldModel(self.db)
+        self.constitution = Constitution(self.db)
+        self.policy = PolicyEngine(self.db)
+        self.regulatory = RegulatoryBrain(self.db)
+        self.data = DataGovernance(self.db)
+        self.ai = AIGovernance(self.db)
+        self.quality = QualityManagement(self.db)
+        self.physical = PhysicalIntelligence(self.db)
+        self.planner = Planner(self.db, self.policy)
+
+    def bootstrap(self) -> dict[str, Any]:
+        constitution_id = self.constitution.install()
+
+        self.policy.set(
+            "PRODUCTION_CHANGE_GATE",
+            "GLOBAL",
+            {
+                "required": {
+                    "impact_assessed": True,
+                    "risk_assessed": True,
+                    "backup_verified": True,
+                    "compatibility_verified": True,
+                    "security_verified": True,
+                },
+                "forbidden": {
+                    "latest_equals_install": True,
+                    "fake_success": True,
+                },
+            },
+        )
+
+        self.policy.set(
+            "PRODUCT_COMPLETENESS",
+            "GLOBAL",
+            {
+                "required": {
+                    "backend": True,
+                    "ui": True,
+                    "api": True,
+                    "permissions": True,
+                    "persistence": True,
+                    "critical_workflows": True,
+                    "independent_verification": True,
+                }
+            },
+        )
+
+        self.policy.set(
+            "OWNER_SUPREMACY",
+            "GLOBAL",
+            {
+                "required": {
+                    "authority": OWNER,
+                },
+                "forbidden": {
+                    "agent_overrides_owner": True,
+                },
+            },
+        )
+
+        self.policy.set(
+            "PHYSICAL_SAFETY",
+            "GLOBAL",
+            {
+                "required": {
+                    "sensor_trust_checked": True,
+                    "deterministic_safety_controller": True,
+                }
+            },
+        )
+
+        return {
+            "version": VERSION,
+            "authority": OWNER,
+            "constitution": constitution_id,
+            "primary_files": PRIMARY_FILES,
+            "file_05": "FORBIDDEN",
+            "lifecycle": LIFECYCLE,
+            "physical_chain": PHYSICAL_CHAIN,
+        }
+
+    def cycle(self) -> dict[str, Any]:
+        world = self.world.discover()
+
+        result = {
+            "started": now(),
+            "world": world,
+            "regulatory_sources":
+                self.db.db.execute(
+                    "SELECT COUNT(*) FROM official_sources"
+                ).fetchone()[0],
+            "pending_regulatory_changes":
+                self.db.db.execute(
+                    "SELECT COUNT(*) FROM regulatory_changes"
+                ).fetchone()[0],
+            "platforms":
+                self.db.db.execute(
+                    "SELECT COUNT(*) FROM platforms"
+                ).fetchone()[0],
+            "data_assets":
+                self.db.db.execute(
+                    "SELECT COUNT(*) FROM data_assets"
+                ).fetchone()[0],
+            "ai_assets":
+                self.db.db.execute(
+                    "SELECT COUNT(*) FROM ai_assets"
+                ).fetchone()[0],
+            "physical_assets":
+                self.db.db.execute(
+                    "SELECT COUNT(*) FROM physical_assets"
+                ).fetchone()[0],
+            "finished": now(),
+        }
+
+        self.db.evidence(
+            "MASTERMIND_CYCLE",
+            "GLOBAL",
             result,
         )
         return result
 
 
-class AIGovernance:
-    def __init__(self, store: Store):
-        self.store = store
-
-    def inventory_local_models(self) -> List[Dict[str, Any]]:
-        models = []
-
-        if shutil.which("ollama"):
-            result = run(["ollama", "list"])
-            for line in result["stdout"].splitlines()[1:]:
-                parts = line.split()
-                if parts:
-                    models.append(
-                        {
-                            "provider": "ollama",
-                            "model": parts[0],
-                            "source": "local-runtime",
-                        }
-                    )
-
-        self.store.set_knowledge("ai_bom", models)
-        self.store.evidence("AI_BOM", "local-models", models)
-        return models
-
-
-class RiskEngine:
-    WEIGHTS = {
-        "INFO": 1,
-        "LOW": 2,
-        "MEDIUM": 4,
-        "HIGH": 7,
-        "CRITICAL": 10,
-    }
-
-    def score(
-        self,
-        severity: str,
-        criticality: str,
-        blast_radius: int,
-        data_risk: int,
-        security_risk: int,
-    ) -> int:
-        base = self.WEIGHTS.get(severity.upper(), 4)
-        critical = 5 if criticality.upper() == "CRITICAL" else 0
-        return min(
-            100,
-            base * 5
-            + critical
-            + min(blast_radius, 20)
-            + min(data_risk, 20)
-            + min(security_risk, 20),
-        )
-
-
-class DecisionEngine:
-    def __init__(self, store: Store):
-        self.store = store
-        self.policy = PolicyEngine(store)
-
-    def generate(self) -> List[str]:
-        decisions = []
-
-        findings = self.store.db.execute(
-            "SELECT * FROM findings WHERE status='OPEN'"
-        ).fetchall()
-
-        for finding in findings:
-            evidence = json.loads(finding["evidence"])
-            action = {
-                "finding_id": finding["id"],
-                "category": finding["category"],
-                "severity": finding["severity"],
-                "backup": True,
-                "independent_verification": True,
-                "critical_workflow_verification": True,
-                "destructive": False,
-            }
-
-            policy_result = self.policy.evaluate(action)
-
-            if not policy_result["allowed"]:
-                continue
-
-            did = self.store.decision(
-                finding_id=finding["id"],
-                action="REMEDIATE_AND_VERIFY",
-                risk=finding["severity"],
-                payload={
-                    "finding": dict(finding),
-                    "evidence": evidence,
-                    "required_execution_path": EXECUTION_PATH,
-                    "policy_result": policy_result,
-                },
-            )
-            decisions.append(did)
-
-        return decisions
-
-
-class ProductCompleteness:
-    def __init__(self, store: Store):
-        self.store = store
-
-    def inspect_repository(self, path: pathlib.Path) -> Dict[str, Any]:
-        indicators = {
-            "frontend": False,
-            "api": False,
-            "tests": False,
-            "deployment": False,
-            "database": False,
-            "localization": False,
-            "accessibility_signals": False,
-        }
-
-        if not path.exists():
-            return indicators
-
-        for base, dirs, files in os.walk(path):
-            p = pathlib.Path(base)
-            if ".git" in p.parts or "node_modules" in p.parts:
-                continue
-
-            lower_files = [x.lower() for x in files]
-
-            if any(x in lower_files for x in ("package.json", "vite.config.js")):
-                indicators["frontend"] = True
-
-            if any(
-                x.endswith(".py") or x.endswith(".js")
-                for x in lower_files
-            ):
-                indicators["api"] = True
-
-            if any("test" in x for x in lower_files):
-                indicators["tests"] = True
-
-            if any(
-                x in lower_files
-                for x in (
-                    "dockerfile",
-                    "docker-compose.yml",
-                    "railway.json",
-                )
-            ):
-                indicators["deployment"] = True
-
-            if any(
-                x.endswith((".sqlite", ".db", ".sql"))
-                for x in lower_files
-            ):
-                indicators["database"] = True
-
-            if any(
-                x in lower_files
-                for x in ("ar.json", "en.json", "i18n.json")
-            ):
-                indicators["localization"] = True
-
-        return indicators
-
-
-class Mastermind:
-    def __init__(self):
-        self.store = Store()
-        self.discovery = DiscoveryEngine(self.store)
-        self.graph = KnowledgeGraph(self.store)
-        self.twin = DigitalTwin(self.store)
-        self.constitution = ConstitutionEngine(self.store)
-        self.policy = PolicyEngine(self.store)
-        self.regulatory = RegulatoryEngine(self.store)
-        self.data = DataGovernance(self.store)
-        self.ai = AIGovernance(self.store)
-        self.decisions = DecisionEngine(self.store)
-
-    def bootstrap(self) -> Dict[str, Any]:
-        ensure_dirs()
-        self.constitution.install()
-        self.policy.seed()
-
-        result = {
-            "owner": OWNER,
-            "version": VERSION,
-            "files": FILES,
-            "execution_path": EXECUTION_PATH,
-            "root": str(ROOT),
-            "database": str(DB_PATH),
-            "bootstrapped_at": utcnow(),
-        }
-
-        self.store.evidence("BOOTSTRAP", "mastermind", result)
-        return result
-
-    def cycle(self, roots: List[str]) -> Dict[str, Any]:
-        discovery = self.discovery.discover(roots)
-        graph = self.graph.rebuild()
-        twin = self.twin.build()
-        data = self.data.inspect_environment_names()
-        ai = self.ai.inventory_local_models()
-        deadlines = self.regulatory.deadlines()
-        matrix = self.regulatory.evidence_matrix()
-        decisions = self.decisions.generate()
-
-        result = {
-            "status": "CYCLE_COMPLETED_WITH_EVIDENCE",
-            "time": utcnow(),
-            "discovery": discovery,
-            "knowledge_graph_hash": graph["hash"],
-            "digital_twin_hash": twin["state_hash"],
-            "data_governance": data,
-            "ai_bom": ai,
-            "regulatory_deadlines": deadlines,
-            "evidence_matrix_rules": len(matrix["rules"]),
-            "decisions": decisions,
-        }
-
-        self.store.evidence("MASTERMIND_CYCLE", "global", result)
-        return result
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "command",
-        choices=["bootstrap", "discover", "cycle", "twin", "decide"],
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
     )
-    parser.add_argument(
-        "--roots",
-        nargs="*",
-        default=["/root", "/opt", "/srv"],
-    )
-    args = parser.parse_args()
 
-    mastermind = Mastermind()
+    sub.add_parser("bootstrap")
+    sub.add_parser("discover")
+    sub.add_parser("cycle")
+
+    p_plan = sub.add_parser("plan")
+    p_plan.add_argument("platform")
+    p_plan.add_argument("objective")
+
+    p_source = sub.add_parser("register-source")
+    p_source.add_argument("jurisdiction")
+    p_source.add_argument("authority")
+    p_source.add_argument("title")
+    p_source.add_argument("url")
+    p_source.add_argument("source_type")
+    p_source.add_argument("official_domains", nargs="+")
+
+    p_fetch = sub.add_parser("fetch-source")
+    p_fetch.add_argument("source_id")
+
+    p_loop = sub.add_parser("loop")
+    p_loop.add_argument(
+        "--interval",
+        type=int,
+        default=int(
+            os.environ.get(
+                "MAJD_MASTERMIND_INTERVAL",
+                "3600",
+            )
+        ),
+    )
+
+    args = parser.parse_args()
+    app = Mastermind()
 
     if args.command == "bootstrap":
-        output = mastermind.bootstrap()
+        print(json.dumps(
+            app.bootstrap(),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
-    elif args.command == "discover":
-        mastermind.bootstrap()
-        output = mastermind.discovery.discover(args.roots)
+    if args.command == "discover":
+        print(json.dumps(
+            app.world.discover(),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
-    elif args.command == "twin":
-        mastermind.bootstrap()
-        mastermind.discovery.discover(args.roots)
-        mastermind.graph.rebuild()
-        output = mastermind.twin.build()
+    if args.command == "cycle":
+        print(json.dumps(
+            app.cycle(),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
-    elif args.command == "decide":
-        mastermind.bootstrap()
-        output = {"decisions": mastermind.decisions.generate()}
+    if args.command == "plan":
+        print(app.planner.plan(
+            args.platform,
+            args.objective,
+        ))
+        return 0
 
-    else:
-        mastermind.bootstrap()
-        output = mastermind.cycle(args.roots)
+    if args.command == "register-source":
+        print(app.regulatory.register(
+            args.jurisdiction,
+            args.authority,
+            args.title,
+            args.url,
+            args.source_type,
+            args.official_domains,
+        ))
+        return 0
 
-    print(json.dumps(output, ensure_ascii=False, indent=2))
+    if args.command == "fetch-source":
+        print(json.dumps(
+            app.regulatory.fetch(args.source_id),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
+
+    if args.command == "loop":
+        app.bootstrap()
+        import time
+        while True:
+            try:
+                app.cycle()
+            except Exception as exc:
+                app.db.evidence(
+                    "MASTERMIND_FAILURE",
+                    "GLOBAL",
+                    {"error": repr(exc)},
+                )
+            time.sleep(max(60, args.interval))
+
     return 0
 
 
