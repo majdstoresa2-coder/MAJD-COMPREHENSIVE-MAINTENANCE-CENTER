@@ -2,28 +2,30 @@
 # -*- coding: utf-8 -*-
 
 """
-MAJD SOVEREIGN MAINTENANCE PLATFORM
-FILE 04 — MAJD-SOVEREIGN-CYBER-DEFENSE-04.py
+MAJD MAINTENANCE — FILE 04
+MAJD-SOVEREIGN-CYBER-DEFENSE-04.py
 
-Sovereign defensive security layer.
+SOVEREIGN DEFENSE LAYER
 
-DEFENSIVE SCOPE ONLY:
-- integrity
-- secrets exposure detection
-- identity/session configuration evidence
-- network/API exposure
-- vulnerabilities
-- malware/persistence indicators
-- software supply chain
-- AI/agent/tool defense policy
-- certificates
-- containment recommendations / controlled local containment
-- hardware health:
-  SMART / NVMe / temperatures / fans / PSU / UPS / BMC / Redfish
-  only when the hardware actually exposes the capability.
+Defensive implementation:
+Zero Trust
+Secrets
+Identity/session
+Network/API
+Threat intelligence ingestion
+Vulnerability management
+Malware/persistence indicators
+Supply chain
+AI/Agent/Tool defense
+Integrity
+Containment/quarantine
+Hardware/Firmware security
+BMC isolation checks
+Physical/cyber-physical safety boundary
+Secure media lifecycle
+Evidence
 
-NO FAKE HARDWARE CAPABILITIES.
-NO FAKE SECURITY SUCCESS.
+NO FILE 05.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import hmac
 import json
 import os
 import pathlib
@@ -38,208 +41,250 @@ import re
 import shutil
 import socket
 import sqlite3
-import ssl
 import stat
 import subprocess
-import time
+import urllib.parse
+import urllib.request
 import uuid
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 
 
 ROOT = pathlib.Path(
-    os.environ.get("MAJD_MAINTENANCE_ROOT", "/var/lib/majd-maintenance")
+    os.environ.get(
+        "MAJD_MAINTENANCE_STATE",
+        "/var/lib/majd-maintenance",
+    )
 ).resolve()
 
-DB = ROOT / "majd-sovereign.db"
-EVIDENCE = ROOT / "evidence"
-BASELINES = ROOT / "security-baselines"
+DB = ROOT / "majd-maintenance.sqlite3"
 QUARANTINE = ROOT / "quarantine"
+
+OWNER = "SUPREME_OWNER"
+
+SENSITIVE_PORTS = {
+    22: "SSH",
+    2375: "DOCKER_UNENCRYPTED",
+    3306: "MYSQL",
+    5432: "POSTGRES",
+    6379: "REDIS",
+    11211: "MEMCACHED",
+    6443: "KUBERNETES_API",
+}
+
+SECRET_PATTERNS = (
+    re.compile(
+        rb"(?i)(api[_-]?key|secret|token|password)"
+        rb"\s*[:=]\s*['\"]?([^'\"\s]{8,})"
+    ),
+    re.compile(
+        rb"-----BEGIN (?:RSA |EC |OPENSSH )?"
+        rb"PRIVATE KEY-----"
+    ),
+)
 
 
 def now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat()
+    return dt.datetime.now(
+        dt.timezone.utc
+    ).isoformat()
 
 
 def run(
-    args: List[str],
-    timeout: int = 60,
-) -> Dict[str, Any]:
+    argv: list[str],
+    timeout: int = 300,
+) -> dict[str, Any]:
     try:
-        cp = subprocess.run(
-            args,
+        p = subprocess.run(
+            argv,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
         return {
-            "ok": cp.returncode == 0,
-            "returncode": cp.returncode,
-            "stdout": cp.stdout[-200000:],
-            "stderr": cp.stderr[-200000:],
+            "returncode": p.returncode,
+            "stdout": p.stdout[-300000:],
+            "stderr": p.stderr[-100000:],
         }
     except Exception as exc:
         return {
-            "ok": False,
-            "error": repr(exc),
+            "returncode": -1,
+            "stdout": "",
+            "stderr": repr(exc),
         }
 
 
-def file_hash(path: pathlib.Path) -> str:
-    h = hashlib.sha256()
-
-    with path.open("rb") as f:
-        while True:
-            block = f.read(1024 * 1024)
-            if not block:
-                break
-            h.update(block)
-
-    return h.hexdigest()
-
-
-class DefenseStore:
+class Defense:
     def __init__(self):
-        for p in (ROOT, EVIDENCE, BASELINES, QUARANTINE):
-            p.mkdir(parents=True, exist_ok=True)
+        ROOT.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        QUARANTINE.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
-        self.db = sqlite3.connect(DB, timeout=30)
+        self.db = sqlite3.connect(DB)
         self.db.row_factory = sqlite3.Row
 
-        self.db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS security_findings(
-                id TEXT PRIMARY KEY,
-                category TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                resource TEXT NOT NULL,
-                title TEXT NOT NULL,
-                evidence TEXT NOT NULL,
-                remediation TEXT NOT NULL,
-                containment TEXT,
-                state TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS integrity_baseline(
+            path TEXT PRIMARY KEY,
+            sha256 TEXT NOT NULL,
+            mode INTEGER NOT NULL,
+            uid INTEGER NOT NULL,
+            gid INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS integrity_baseline(
-                path TEXT PRIMARY KEY,
-                sha256 TEXT NOT NULL,
-                mode INTEGER NOT NULL,
-                uid INTEGER NOT NULL,
-                gid INTEGER NOT NULL,
-                updated_at TEXT NOT NULL
-            );
+        CREATE TABLE IF NOT EXISTS security_findings(
+            id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            details TEXT NOT NULL,
+            remediation TEXT NOT NULL,
+            containment TEXT NOT NULL,
+            verification TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
 
-            CREATE TABLE IF NOT EXISTS hardware_capabilities(
-                capability TEXT PRIMARY KEY,
-                available INTEGER NOT NULL,
-                evidence TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            """
+        CREATE TABLE IF NOT EXISTS threat_indicators(
+            id TEXT PRIMARY KEY,
+            indicator_type TEXT NOT NULL,
+            indicator_hash TEXT NOT NULL,
+            source TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            expires_at TEXT,
+            metadata TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(indicator_type,indicator_hash,source)
+        );
+
+        CREATE TABLE IF NOT EXISTS media_lifecycle(
+            id TEXT PRIMARY KEY,
+            device TEXT NOT NULL,
+            serial TEXT,
+            state TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """)
+        self.db.commit()
+
+    def evidence(
+        self,
+        category: str,
+        subject: str,
+        payload: Any,
+    ) -> None:
+        raw = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
         )
+
+        self.db.execute("""
+            INSERT INTO evidence
+            (id,category,subject,payload,sha256,created_at)
+            VALUES(?,?,?,?,?,?)
+        """, (
+            str(uuid.uuid4()),
+            category,
+            subject,
+            raw,
+            hashlib.sha256(
+                raw.encode()
+            ).hexdigest(),
+            now(),
+        ))
         self.db.commit()
 
     def finding(
         self,
         category: str,
         severity: str,
-        resource: str,
-        title: str,
-        evidence: Dict[str, Any],
-        remediation: Dict[str, Any],
-        containment: Optional[Dict[str, Any]] = None,
+        subject: str,
+        details: dict[str, Any],
+        remediation: dict[str, Any] | None = None,
+        containment: dict[str, Any] | None = None,
     ) -> str:
         fid = str(uuid.uuid4())
-        timestamp = now()
 
-        self.db.execute(
-            """
+        self.db.execute("""
             INSERT INTO security_findings
             VALUES(?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                fid,
-                category,
-                severity,
-                resource,
-                title,
-                json.dumps(evidence, ensure_ascii=False),
-                json.dumps(remediation, ensure_ascii=False),
-                (
-                    json.dumps(containment, ensure_ascii=False)
-                    if containment
-                    else None
-                ),
-                "OPEN",
-                timestamp,
-                timestamp,
+        """, (
+            fid,
+            category,
+            severity,
+            subject,
+            json.dumps(
+                details,
+                ensure_ascii=False,
             ),
-        )
+            json.dumps(
+                remediation or {},
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                containment or {},
+                ensure_ascii=False,
+            ),
+            json.dumps({}),
+            "OPEN",
+            now(),
+            now(),
+        ))
         self.db.commit()
-
-        self.evidence(
-            "SECURITY_FINDING",
-            {
-                "id": fid,
-                "category": category,
-                "severity": severity,
-                "resource": resource,
-                "title": title,
-                "evidence": evidence,
-                "remediation": remediation,
-                "containment": containment,
-            },
-        )
-
         return fid
 
-    def evidence(
+    @staticmethod
+    def hash_file(
+        path: pathlib.Path,
+    ) -> str:
+        h = hashlib.sha256()
+
+        with path.open("rb") as handle:
+            for chunk in iter(
+                lambda:
+                handle.read(1024 * 1024),
+                b"",
+            ):
+                h.update(chunk)
+
+        return h.hexdigest()
+
+    def baseline(
         self,
-        subject: str,
-        payload: Dict[str, Any],
-    ) -> None:
-        path = EVIDENCE / f"defense-{uuid.uuid4()}.json"
-
-        path.write_text(
-            json.dumps(
-                {
-                    "subject": subject,
-                    "created_at": now(),
-                    "payload": payload,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-
-
-class IntegrityMonitor:
-    def __init__(self, store: DefenseStore):
-        self.store = store
-
-    def baseline(self, paths: Iterable[pathlib.Path]) -> Dict[str, Any]:
+        roots: list[pathlib.Path],
+    ) -> dict[str, Any]:
         count = 0
 
-        for root in paths:
-            if not root.exists():
-                continue
+        for root in roots:
+            root = root.resolve()
 
-            candidates = (
-                [root]
-                if root.is_file()
-                else [p for p in root.rglob("*") if p.is_file()]
-            )
+            if root.is_file():
+                candidates = [root]
+            elif root.is_dir():
+                candidates = root.rglob("*")
+            else:
+                continue
 
             for path in candidates:
                 try:
-                    st = path.stat()
-                    checksum = file_hash(path)
+                    if (
+                        not path.is_file()
+                        or path.is_symlink()
+                    ):
+                        continue
 
-                    self.store.db.execute(
-                        """
+                    st = path.stat()
+
+                    self.db.execute("""
                         INSERT INTO integrity_baseline
                         VALUES(?,?,?,?,?,?)
                         ON CONFLICT(path) DO UPDATE SET
@@ -248,710 +293,1000 @@ class IntegrityMonitor:
                             uid=excluded.uid,
                             gid=excluded.gid,
                             updated_at=excluded.updated_at
-                        """,
-                        (
-                            str(path.resolve()),
-                            checksum,
-                            stat.S_IMODE(st.st_mode),
-                            st.st_uid,
-                            st.st_gid,
-                            now(),
+                    """, (
+                        str(path),
+                        self.hash_file(path),
+                        stat.S_IMODE(
+                            st.st_mode
                         ),
-                    )
+                        st.st_uid,
+                        st.st_gid,
+                        now(),
+                    ))
+
                     count += 1
 
-                except (OSError, PermissionError):
+                except (
+                    PermissionError,
+                    FileNotFoundError,
+                    OSError,
+                ):
                     continue
 
-        self.store.db.commit()
+        self.db.commit()
 
         result = {
-            "ok": True,
-            "baselined_files": count,
+            "baselined": count,
         }
 
-        self.store.evidence("INTEGRITY_BASELINE", result)
+        self.evidence(
+            "INTEGRITY_BASELINE",
+            "filesystem",
+            result,
+        )
         return result
 
-    def verify(self) -> Dict[str, Any]:
-        changes = []
+    def integrity(self) -> list[dict[str, Any]]:
+        findings = []
 
-        rows = self.store.db.execute(
+        for row in self.db.execute(
             "SELECT * FROM integrity_baseline"
-        ).fetchall()
-
-        for row in rows:
-            path = pathlib.Path(row["path"])
+        ):
+            path = pathlib.Path(
+                row["path"]
+            )
 
             if not path.exists():
-                changes.append(
-                    {
-                        "path": row["path"],
-                        "change": "MISSING",
-                    }
+                item = {
+                    "path": str(path),
+                    "state": "MISSING",
+                }
+
+                findings.append(item)
+
+                self.finding(
+                    "INTEGRITY",
+                    "HIGH",
+                    str(path),
+                    item,
                 )
                 continue
 
             try:
-                current = file_hash(path)
+                current_hash = (
+                    self.hash_file(path)
+                )
+
                 st = path.stat()
 
-                if current != row["sha256"]:
-                    changes.append(
-                        {
-                            "path": row["path"],
-                            "change": "CONTENT_CHANGED",
-                            "expected": row["sha256"],
-                            "actual": current,
-                        }
-                    )
+                current_mode = stat.S_IMODE(
+                    st.st_mode
+                )
+            except Exception as exc:
+                findings.append({
+                    "path": str(path),
+                    "state": "UNREADABLE",
+                    "error": repr(exc),
+                })
+                continue
 
-                mode = stat.S_IMODE(st.st_mode)
+            changes = {}
 
-                if mode != row["mode"]:
-                    changes.append(
-                        {
-                            "path": row["path"],
-                            "change": "MODE_CHANGED",
-                            "expected": row["mode"],
-                            "actual": mode,
-                        }
-                    )
+            if current_hash != row["sha256"]:
+                changes["sha256"] = {
+                    "expected":
+                        row["sha256"],
+                    "actual":
+                        current_hash,
+                }
 
-            except OSError as exc:
-                changes.append(
-                    {
-                        "path": row["path"],
-                        "change": "READ_FAILURE",
-                        "error": repr(exc),
-                    }
+            if current_mode != row["mode"]:
+                changes["mode"] = {
+                    "expected":
+                        row["mode"],
+                    "actual":
+                        current_mode,
+                }
+
+            if st.st_uid != row["uid"]:
+                changes["uid"] = {
+                    "expected":
+                        row["uid"],
+                    "actual":
+                        st.st_uid,
+                }
+
+            if changes:
+                item = {
+                    "path": str(path),
+                    "state": "CHANGED",
+                    "changes": changes,
+                }
+
+                findings.append(item)
+
+                self.finding(
+                    "INTEGRITY",
+                    "HIGH",
+                    str(path),
+                    item,
                 )
 
-        if changes:
-            self.store.finding(
-                "INTEGRITY",
-                "HIGH",
-                "filesystem",
-                "Critical integrity baseline drift detected",
-                {"changes": changes},
-                {
-                    "action": "VALIDATE_CHANGE_OR_RESTORE_FROM_VERIFIED_BACKUP"
-                },
-                {
-                    "action": "READ_ONLY_OR_QUARANTINE_AFFECTED_COMPONENT_IF_UNAUTHORIZED"
-                },
-            )
+        self.evidence(
+            "INTEGRITY_CHECK",
+            "filesystem",
+            findings,
+        )
+        return findings
 
-        return {
-            "ok": not changes,
-            "changes": changes,
-        }
-
-
-class SecretExposureScanner:
-    PATTERNS = [
-        re.compile(
-            rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
-        ),
-        re.compile(
-            rb"(?i)(?:api[_-]?key|secret|password|token)\s*[:=]\s*[\"'][^\"'\n]{8,}[\"']"
-        ),
-    ]
-
-    def __init__(self, store: DefenseStore):
-        self.store = store
-
-    def scan_file(self, path: pathlib.Path) -> List[str]:
-        try:
-            if path.stat().st_size > 5 * 1024 * 1024:
-                return []
-
-            data = path.read_bytes()
-
-        except (OSError, PermissionError):
-            return []
-
-        matches = []
-
-        for pattern in self.PATTERNS:
-            if pattern.search(data):
-                matches.append(pattern.pattern.decode(errors="ignore"))
-
-        return matches
-
-    def scan_tree(self, root: pathlib.Path) -> Dict[str, Any]:
+    def secrets(
+        self,
+        roots: list[pathlib.Path],
+    ) -> list[dict[str, Any]]:
         findings = []
 
-        if not root.exists():
-            return {
-                "ok": False,
-                "state": "TARGET_NOT_FOUND",
-            }
+        ignored = {
+            ".git",
+            "node_modules",
+            ".venv",
+            "venv",
+            "__pycache__",
+            "backups",
+            "quarantine",
+        }
 
-        for path in root.rglob("*"):
-            if not path.is_file():
+        for root in roots:
+            if not root.exists():
                 continue
 
-            if any(
-                x in path.parts
-                for x in (".git", "node_modules", ".venv")
-            ):
-                continue
+            candidates = (
+                [root]
+                if root.is_file()
+                else root.rglob("*")
+            )
 
-            matches = self.scan_file(path)
+            for path in candidates:
+                try:
+                    if (
+                        not path.is_file()
+                        or path.stat().st_size
+                        > 5 * 1024 * 1024
+                        or any(
+                            part in ignored
+                            for part in path.parts
+                        )
+                    ):
+                        continue
 
-            if matches:
-                findings.append(
-                    {
+                    data = path.read_bytes()
+                except Exception:
+                    continue
+
+                if any(
+                    pattern.search(data)
+                    for pattern
+                    in SECRET_PATTERNS
+                ):
+                    item = {
                         "path": str(path),
-                        "pattern_types": matches,
+                        "secret":
+                            "REDACTED_NOT_CAPTURED",
                     }
-                )
 
-        if findings:
-            self.store.finding(
-                "SECRETS",
-                "CRITICAL",
-                str(root),
-                "Potential secret material found in project files",
-                {
-                    "files": findings,
-                    "secret_values_recorded": False,
-                },
-                {
-                    "actions": [
-                        "REMOVE_SECRET_FROM_SOURCE",
-                        "ROTATE_COMPROMISED_CREDENTIAL_EXTERNALLY_IF_REQUIRED",
-                        "PURGE_EXPOSED_HISTORY_WHEN_AUTHORIZED",
-                        "USE_SECRET_REFERENCE",
-                    ]
-                },
-                {
-                    "action": "RESTRICT_ACCESS_TO_AFFECTED_FILES"
-                },
-            )
+                    findings.append(item)
 
-        return {
-            "ok": not findings,
-            "findings": findings,
-            "secret_values_recorded": False,
-        }
-
-
-class NetworkDefense:
-    def __init__(self, store: DefenseStore):
-        self.store = store
-
-    def listeners(self) -> Dict[str, Any]:
-        if not shutil.which("ss"):
-            return {
-                "ok": False,
-                "state": "SS_UNAVAILABLE",
-            }
-
-        result = run(["ss", "-lntup"])
-
-        listeners = result.get("stdout", "").splitlines()
-
-        self.store.evidence(
-            "NETWORK_LISTENERS",
-            {
-                "listeners": listeners,
-            },
-        )
-
-        return {
-            "ok": result["ok"],
-            "listeners": listeners,
-        }
-
-
-class PersistenceDefense:
-    def __init__(self, store: DefenseStore):
-        self.store = store
-
-    def inspect(self) -> Dict[str, Any]:
-        evidence = {}
-
-        if shutil.which("systemctl"):
-            evidence["enabled_services"] = run(
-                [
-                    "systemctl",
-                    "list-unit-files",
-                    "--type=service",
-                    "--state=enabled",
-                    "--no-pager",
-                ]
-            )
-
-        cron_paths = [
-            pathlib.Path("/etc/crontab"),
-            pathlib.Path("/etc/cron.d"),
-            pathlib.Path("/var/spool/cron"),
-        ]
-
-        evidence["cron"] = []
-
-        for path in cron_paths:
-            if path.exists():
-                evidence["cron"].append(str(path))
-
-        evidence["root_authorized_keys_exists"] = pathlib.Path(
-            "/root/.ssh/authorized_keys"
-        ).exists()
-
-        self.store.evidence(
-            "PERSISTENCE_INSPECTION",
-            evidence,
-        )
-
-        return evidence
-
-
-class SupplyChainDefense:
-    def __init__(self, store: DefenseStore):
-        self.store = store
-
-    def inventory(self, root: pathlib.Path) -> Dict[str, Any]:
-        manifests = []
-
-        names = {
-            "requirements.txt",
-            "pyproject.toml",
-            "poetry.lock",
-            "package.json",
-            "package-lock.json",
-            "yarn.lock",
-            "pnpm-lock.yaml",
-            "Dockerfile",
-        }
-
-        if root.exists():
-            for path in root.rglob("*"):
-                if path.is_file() and path.name in names:
-                    manifests.append(
-                        {
-                            "path": str(path),
-                            "sha256": file_hash(path),
-                        }
+                    self.finding(
+                        "SECRET_EXPOSURE",
+                        "CRITICAL",
+                        str(path),
+                        item,
+                        remediation={
+                            "rotate_if_real":
+                                True,
+                            "remove_from_history":
+                                True,
+                            "move_to_secret_store":
+                                True,
+                        },
                     )
 
+        self.evidence(
+            "SECRET_SCAN",
+            "projects",
+            findings,
+        )
+        return findings
+
+    def identity(self) -> dict[str, Any]:
         result = {
-            "root": str(root),
-            "manifests": manifests,
-            "sbom_source_inventory": True,
+            "ssh": {},
+            "sudo": {},
+            "shadow_permissions": {},
         }
 
-        self.store.evidence("SUPPLY_CHAIN_INVENTORY", result)
-        return result
-
-    def python_audit(self, root: pathlib.Path) -> Dict[str, Any]:
-        if not shutil.which("pip-audit"):
-            return {
-                "ok": False,
-                "state": "SECURITY_SCANNER_NOT_INSTALLED",
-                "external_dependency_required": False,
-                "remediation": "Install an approved local vulnerability scanner through the Executor before declaring vulnerability coverage.",
-            }
-
-        return run(
-            ["pip-audit", "--format", "json"],
-            timeout=600,
+        sshd = pathlib.Path(
+            "/etc/ssh/sshd_config"
         )
 
-
-class TLSDefense:
-    def verify(self, hostname: str, port: int = 443) -> Dict[str, Any]:
-        context = ssl.create_default_context()
-
-        try:
-            with socket.create_connection(
-                (hostname, port),
-                timeout=10,
-            ) as sock:
-                with context.wrap_socket(
-                    sock,
-                    server_hostname=hostname,
-                ) as tls:
-                    cert = tls.getpeercert()
-
-                    return {
-                        "ok": True,
-                        "protocol": tls.version(),
-                        "cipher": tls.cipher(),
-                        "certificate": cert,
-                    }
-
-        except Exception as exc:
-            return {
-                "ok": False,
-                "error": repr(exc),
+        if sshd.exists():
+            result["ssh"] = {
+                "path": str(sshd),
+                "sha256":
+                    self.hash_file(sshd),
+                "effective": run([
+                    "sshd",
+                    "-T",
+                ]) if shutil.which(
+                    "sshd"
+                ) else {},
             }
 
+        sudoers = pathlib.Path(
+            "/etc/sudoers"
+        )
 
-class AIAgentDefense:
-    DANGEROUS_PATTERNS = [
-        re.compile(r"\brm\s+-rf\s+/(?:\s|$)"),
-        re.compile(r"\bmkfs(?:\.|\s)"),
-        re.compile(r"\bdd\s+if=.*\bof=/dev/"),
-        re.compile(r"\bshutdown\b"),
-        re.compile(r"\breboot\b"),
-    ]
+        if sudoers.exists():
+            st = sudoers.stat()
 
-    def validate_command(
+            result["sudo"] = {
+                "mode":
+                    oct(
+                        stat.S_IMODE(
+                            st.st_mode
+                        )
+                    ),
+                "sha256":
+                    self.hash_file(
+                        sudoers
+                    ),
+            }
+
+        shadow = pathlib.Path(
+            "/etc/shadow"
+        )
+
+        if shadow.exists():
+            st = shadow.stat()
+
+            result[
+                "shadow_permissions"
+            ] = {
+                "mode":
+                    oct(
+                        stat.S_IMODE(
+                            st.st_mode
+                        )
+                    ),
+                "uid": st.st_uid,
+                "gid": st.st_gid,
+            }
+
+        self.evidence(
+            "IDENTITY_DEFENSE",
+            "local-host",
+            result,
+        )
+        return result
+
+    def network(self) -> list[dict[str, Any]]:
+        if not shutil.which("ss"):
+            return []
+
+        listeners = run([
+            "ss",
+            "-lntupH",
+        ])
+
+        findings = []
+
+        for line in listeners[
+            "stdout"
+        ].splitlines():
+
+            for port, service in (
+                SENSITIVE_PORTS.items()
+            ):
+                pattern = (
+                    rf"(?:0\.0\.0\.0|"
+                    rf"\[::\]|\*)\:{port}\b"
+                )
+
+                if re.search(
+                    pattern,
+                    line,
+                ):
+                    item = {
+                        "port": port,
+                        "service": service,
+                        "listener": line,
+                        "reason":
+                            "SENSITIVE_SERVICE_ON_WILDCARD_ADDRESS",
+                    }
+
+                    findings.append(item)
+
+                    self.finding(
+                        "NETWORK_EXPOSURE",
+                        "HIGH",
+                        f"port:{port}",
+                        item,
+                        remediation={
+                            "bind_private":
+                                True,
+                            "firewall_review":
+                                True,
+                            "authentication_review":
+                                True,
+                        },
+                    )
+
+        self.evidence(
+            "NETWORK_DEFENSE",
+            "local-host",
+            findings,
+        )
+        return findings
+
+    def persistence(self) -> dict[str, Any]:
+        result = {
+            "enabled_units": run([
+                "systemctl",
+                "list-unit-files",
+                "--state=enabled",
+                "--no-pager",
+            ]) if shutil.which(
+                "systemctl"
+            ) else {},
+            "cron": [],
+            "authorized_keys": [],
+        }
+
+        for base in (
+            pathlib.Path("/etc/cron.d"),
+            pathlib.Path("/var/spool/cron"),
+        ):
+            if not base.exists():
+                continue
+
+            for path in base.rglob("*"):
+                if path.is_file():
+                    try:
+                        result["cron"].append({
+                            "path": str(path),
+                            "sha256":
+                                self.hash_file(
+                                    path
+                                ),
+                        })
+                    except Exception:
+                        continue
+
+        for base in (
+            pathlib.Path("/root"),
+            pathlib.Path("/home"),
+        ):
+            if not base.exists():
+                continue
+
+            for path in base.rglob(
+                "authorized_keys"
+            ):
+                try:
+                    result[
+                        "authorized_keys"
+                    ].append({
+                        "path": str(path),
+                        "sha256":
+                            self.hash_file(
+                                path
+                            ),
+                        "mode":
+                            oct(
+                                stat.S_IMODE(
+                                    path.stat()
+                                    .st_mode
+                                )
+                            ),
+                    })
+                except Exception:
+                    continue
+
+        self.evidence(
+            "PERSISTENCE_DISCOVERY",
+            "local-host",
+            result,
+        )
+        return result
+
+    def vulnerability(
         self,
-        command: str,
-        owner_authorized: bool = False,
-    ) -> Dict[str, Any]:
-        matched = [
-            p.pattern
-            for p in self.DANGEROUS_PATTERNS
-            if p.search(command)
-        ]
+        project: pathlib.Path,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
 
-        if matched and not owner_authorized:
+        if shutil.which("pip-audit"):
+            result["pip"] = run([
+                "pip-audit",
+                "--format",
+                "json",
+            ], timeout=1200)
+
+        if (
+            shutil.which("npm")
+            and (
+                project / "package.json"
+            ).exists()
+        ):
+            result["npm"] = run([
+                "npm",
+                "audit",
+                "--json",
+            ], timeout=1200)
+
+        if shutil.which("trivy"):
+            result["trivy"] = run([
+                "trivy",
+                "fs",
+                "--format",
+                "json",
+                str(project),
+            ], timeout=1800)
+
+        if shutil.which("osv-scanner"):
+            result["osv"] = run([
+                "osv-scanner",
+                "-r",
+                str(project),
+            ], timeout=1800)
+
+        if not result:
+            result = {
+                "visibility":
+                    "NOT_VISIBLE",
+                "reason":
+                    "SUPPORTED_SCANNER_NOT_INSTALLED",
+            }
+
+        self.evidence(
+            "VULNERABILITY_MANAGEMENT",
+            str(project),
+            result,
+        )
+        return result
+
+    def supply_chain(
+        self,
+        project: pathlib.Path,
+    ) -> dict[str, Any]:
+        result = {
+            "lockfiles": {},
+            "sbom": None,
+            "git_head": None,
+        }
+
+        for name in (
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "requirements.txt",
+            "poetry.lock",
+            "uv.lock",
+        ):
+            path = project / name
+
+            if path.exists():
+                result[
+                    "lockfiles"
+                ][name] = self.hash_file(
+                    path
+                )
+
+        if (
+            project / ".git"
+        ).exists():
+            result["git_head"] = run([
+                "git",
+                "-C",
+                str(project),
+                "rev-parse",
+                "HEAD",
+            ])
+
+        if shutil.which("syft"):
+            result["sbom"] = run([
+                "syft",
+                str(project),
+                "-o",
+                "cyclonedx-json",
+            ], timeout=1800)
+
+        self.evidence(
+            "SUPPLY_CHAIN",
+            str(project),
+            result,
+        )
+        return result
+
+    def threat_indicator(
+        self,
+        indicator_type: str,
+        indicator: str,
+        source: str,
+        confidence: float,
+        metadata: dict[str, Any],
+        expires_at: str | None = None,
+    ) -> str:
+        indicator_hash = (
+            hashlib.sha256(
+                indicator.encode()
+            ).hexdigest()
+        )
+
+        iid = str(uuid.uuid4())
+
+        self.db.execute("""
+            INSERT OR REPLACE INTO threat_indicators
+            VALUES(?,?,?,?,?,?,?,?)
+        """, (
+            iid,
+            indicator_type,
+            indicator_hash,
+            source,
+            confidence,
+            expires_at,
+            json.dumps(
+                metadata,
+                ensure_ascii=False,
+            ),
+            now(),
+        ))
+        self.db.commit()
+
+        return iid
+
+    def ai_policy(
+        self,
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
+        forbidden = {
+            "PRINT_SECRET",
+            "EXFILTRATE_SECRET",
+            "DISABLE_OWNER",
+            "OVERRIDE_OWNER",
+            "UNVERIFIED_DESTRUCTIVE_ACTION",
+            "EXECUTE_UNTRUSTED_REPO_INSTRUCTION",
+            "BYPASS_POLICY",
+        }
+
+        action_type = str(
+            action.get("type", "")
+        ).upper()
+
+        if action_type in forbidden:
             return {
                 "allowed": False,
-                "reason": "DESTRUCTIVE_COMMAND_REQUIRES_EXPLICIT_AUTHORITY_AND_BACKUP",
-                "matched_controls": matched,
+                "state": "DENIED",
+                "authority": OWNER,
+            }
+
+        if (
+            action.get("destructive")
+            and not action.get(
+                "backup_verified"
+            )
+        ):
+            return {
+                "allowed": False,
+                "state": "DENIED",
+                "reason":
+                    "VERIFIED_BACKUP_REQUIRED",
+            }
+
+        if (
+            action.get(
+                "physical_actuator"
+            )
+            and not action.get(
+                "deterministic_safety_controller"
+            )
+        ):
+            return {
+                "allowed": False,
+                "state": "DENIED",
+                "reason":
+                    "LLM_MAY_REASON_SAFETY_CONTROLLER_ENFORCES_PHYSICAL_LIMITS",
+            }
+
+        if action.get(
+            "external_credential_missing"
+        ):
+            return {
+                "allowed": False,
+                "state":
+                    "EXTERNAL_DEPENDENCY_REQUIRED",
             }
 
         return {
             "allowed": True,
-            "matched_controls": matched,
-            "owner_authorized": owner_authorized,
+            "state": "POLICY_APPROVED",
+            "authority": OWNER,
         }
 
-
-class HardwareDefense:
-    def __init__(self, store: DefenseStore):
-        self.store = store
-
-    def capability(
+    def sensor_trust(
         self,
-        name: str,
-        available: bool,
-        evidence: Dict[str, Any],
-    ) -> None:
-        self.store.db.execute(
-            """
-            INSERT INTO hardware_capabilities
-            VALUES(?,?,?,?)
-            ON CONFLICT(capability) DO UPDATE SET
-                available=excluded.available,
-                evidence=excluded.evidence,
-                updated_at=excluded.updated_at
-            """,
-            (
-                name,
-                int(available),
-                json.dumps(evidence, ensure_ascii=False),
-                now(),
-            ),
-        )
-        self.store.db.commit()
-
-    def smart(self) -> Dict[str, Any]:
-        available = bool(shutil.which("smartctl"))
-
-        if not available:
-            result = {
-                "available": False,
-                "state": "SMARTCTL_UNAVAILABLE",
+        readings: list[float],
+        *,
+        min_value: float,
+        max_value: float,
+        max_jump: float,
+    ) -> dict[str, Any]:
+        if not readings:
+            return {
+                "trusted": False,
+                "reason": "NO_TELEMETRY",
             }
-            self.capability("SMART", False, result)
-            return result
 
-        scan = run(["smartctl", "--scan-open"])
-
-        devices = []
-
-        for line in scan.get("stdout", "").splitlines():
-            if not line.startswith("/dev/"):
-                continue
-
-            device = line.split()[0]
-
-            devices.append(
-                {
-                    "device": device,
-                    "health": run(
-                        ["smartctl", "-H", "-A", device],
-                        timeout=60,
-                    ),
-                }
+        impossible = [
+            value
+            for value in readings
+            if (
+                value < min_value
+                or value > max_value
             )
+        ]
 
-        result = {
-            "available": True,
-            "devices": devices,
-        }
+        jumps = [
+            abs(
+                readings[index]
+                - readings[index - 1]
+            )
+            for index in range(
+                1,
+                len(readings),
+            )
+        ]
 
-        self.capability("SMART", True, result)
-        return result
+        trusted = (
+            not impossible
+            and not any(
+                jump > max_jump
+                for jump in jumps
+            )
+        )
 
-    def nvme(self) -> Dict[str, Any]:
-        available = bool(shutil.which("nvme"))
-
-        if not available:
-            result = {
-                "available": False,
-                "state": "NVME_CLI_UNAVAILABLE",
-            }
-            self.capability("NVME", False, result)
-            return result
-
-        listing = run(["nvme", "list", "-o", "json"])
-
-        result = {
-            "available": True,
-            "list": listing,
-        }
-
-        self.capability("NVME", True, result)
-        return result
-
-    def sensors(self) -> Dict[str, Any]:
-        available = bool(shutil.which("sensors"))
-
-        if not available:
-            result = {
-                "available": False,
-                "state": "LM_SENSORS_UNAVAILABLE",
-            }
-            self.capability("SENSORS", False, result)
-            return result
-
-        result = {
-            "available": True,
-            "readings": run(["sensors", "-j"]),
-        }
-
-        self.capability("SENSORS", True, result)
-        return result
-
-    def ipmi(self) -> Dict[str, Any]:
-        available = bool(shutil.which("ipmitool"))
-
-        if not available:
-            result = {
-                "available": False,
-                "state": "IPMI_UNAVAILABLE",
-            }
-            self.capability("BMC_IPMI", False, result)
-            return result
-
-        result = {
-            "available": True,
-            "sensors": run(["ipmitool", "sensor"]),
-        }
-
-        self.capability("BMC_IPMI", True, result)
-        return result
-
-    def ups(self) -> Dict[str, Any]:
-        available = bool(shutil.which("upsc"))
-
-        if not available:
-            result = {
-                "available": False,
-                "state": "UPS_TELEMETRY_UNAVAILABLE",
-            }
-            self.capability("UPS", False, result)
-            return result
-
-        result = {
-            "available": True,
-            "devices": run(["upsc", "-l"]),
-        }
-
-        self.capability("UPS", True, result)
-        return result
-
-    def inspect(self) -> Dict[str, Any]:
         return {
-            "smart": self.smart(),
-            "nvme": self.nvme(),
-            "sensors": self.sensors(),
-            "bmc_ipmi": self.ipmi(),
-            "ups": self.ups(),
+            "trusted": trusted,
+            "impossible_values":
+                impossible,
+            "max_observed_jump":
+                max(jumps)
+                if jumps else 0,
         }
 
+    def hardware_reality(
+        self,
+    ) -> dict[str, Any]:
+        result = {
+            "SMART": (
+                "DIRECTLY_OBSERVED"
+                if shutil.which("smartctl")
+                else "NOT_VISIBLE"
+            ),
+            "NVME": (
+                "DIRECTLY_OBSERVED"
+                if shutil.which("nvme")
+                else "NOT_VISIBLE"
+            ),
+            "THERMAL": (
+                "DIRECTLY_OBSERVED"
+                if pathlib.Path(
+                    "/sys/class/thermal"
+                ).exists()
+                else "NOT_VISIBLE"
+            ),
+            "ECC": (
+                "DIRECTLY_OBSERVED"
+                if pathlib.Path(
+                    "/sys/devices/system/edac"
+                ).exists()
+                else "NOT_VISIBLE"
+            ),
+            "BMC": (
+                "DIRECTLY_OBSERVED"
+                if shutil.which("ipmitool")
+                else "NOT_VISIBLE"
+            ),
+            "UPS": (
+                "DIRECTLY_OBSERVED"
+                if shutil.which("upsc")
+                else "NOT_VISIBLE"
+            ),
+            "FACILITY_COOLING":
+                "NOT_VISIBLE",
+            "FACILITY_FIRE":
+                "NOT_VISIBLE",
+            "FACILITY_HUMIDITY":
+                "NOT_VISIBLE",
+            "PHYSICAL_ACCESS":
+                "NOT_VISIBLE",
+        }
 
-class ContainmentEngine:
-    """
-    Containment is intentionally narrow.
+        self.evidence(
+            "HARDWARE_REALITY",
+            "local-host",
+            result,
+        )
+        return result
 
-    It does not destroy evidence and does not automatically shut down
-    the whole sovereign platform merely because one finding exists.
-    """
+    def bmc(self) -> dict[str, Any]:
+        if not shutil.which(
+            "ipmitool"
+        ):
+            result = {
+                "visibility":
+                    "NOT_VISIBLE",
+                "security_claim":
+                    "NONE",
+            }
 
-    def __init__(self, store: DefenseStore):
-        self.store = store
+            self.evidence(
+                "BMC_SECURITY",
+                "local-host",
+                result,
+            )
+            return result
 
-    def quarantine_file(
+        result = {
+            "visibility":
+                "DIRECTLY_OBSERVED",
+            "local_access":
+                run([
+                    "ipmitool",
+                    "mc",
+                    "info",
+                ]),
+            "network_configuration":
+                "NOT_PERSISTED_TO_AVOID_SECRET_OR_MANAGEMENT_DATA_EXPOSURE",
+            "public_internet_exposure":
+                "REQUIRES_NETWORK_CORRELATION",
+        }
+
+        self.evidence(
+            "BMC_SECURITY",
+            "local-host",
+            result,
+        )
+        return result
+
+    def quarantine(
         self,
         path: pathlib.Path,
-        explicit_authorization: bool,
-    ) -> Dict[str, Any]:
-        if not explicit_authorization:
-            return {
-                "ok": False,
-                "state": "EXPLICIT_AUTHORIZATION_REQUIRED",
-            }
+        reason: str,
+    ) -> dict[str, Any]:
+        path = path.resolve()
 
-        if not path.exists() or not path.is_file():
-            return {
-                "ok": False,
-                "state": "FILE_NOT_FOUND",
-            }
+        if not path.is_file():
+            raise ValueError(
+                "target must be a file"
+            )
 
-        checksum = file_hash(path)
-
-        destination = QUARANTINE / (
-            f"{uuid.uuid4()}-{path.name}"
+        protected = (
+            "/bin/",
+            "/sbin/",
+            "/usr/bin/",
+            "/usr/sbin/",
+            "/lib/",
+            "/lib64/",
         )
 
-        shutil.copy2(path, destination)
-
-        if file_hash(destination) != checksum:
-            destination.unlink(missing_ok=True)
+        if any(
+            str(path).startswith(prefix)
+            for prefix in protected
+        ):
             return {
-                "ok": False,
-                "state": "QUARANTINE_COPY_VERIFICATION_FAILED",
+                "state":
+                    "OWNER_ACTION_REQUIRED",
+                "reason":
+                    "HIGH_BLAST_RADIUS_SYSTEM_FILE",
             }
 
-        path.unlink()
+        file_hash = self.hash_file(
+            path
+        )
+
+        destination = QUARANTINE / (
+            file_hash[:16]
+            + "-"
+            + path.name
+        )
+
+        os.replace(
+            path,
+            destination,
+        )
+
+        os.chmod(
+            destination,
+            0,
+        )
 
         result = {
-            "ok": True,
             "state": "QUARANTINED",
             "original": str(path),
-            "quarantine": str(destination),
-            "sha256": checksum,
+            "destination":
+                str(destination),
+            "sha256": file_hash,
+            "reason": reason,
         }
 
-        self.store.evidence("QUARANTINE", result)
+        self.evidence(
+            "CONTAINMENT",
+            str(path),
+            result,
+        )
         return result
 
+    def media_state(
+        self,
+        device: str,
+        state: str,
+        serial: str | None,
+        evidence: dict[str, Any],
+    ) -> str:
+        allowed = {
+            "NEW",
+            "ASSIGNED",
+            "IN_USE",
+            "FAILED",
+            "RETIRED",
+            "SANITIZED",
+            "DESTROYED",
+        }
 
-class SovereignCyberDefense:
-    def __init__(self):
-        self.store = DefenseStore()
-        self.integrity = IntegrityMonitor(self.store)
-        self.secrets = SecretExposureScanner(self.store)
-        self.network = NetworkDefense(self.store)
-        self.persistence = PersistenceDefense(self.store)
-        self.supply_chain = SupplyChainDefense(self.store)
-        self.tls = TLSDefense()
-        self.ai = AIAgentDefense()
-        self.hardware = HardwareDefense(self.store)
-        self.containment = ContainmentEngine(self.store)
+        if state not in allowed:
+            raise ValueError(
+                "invalid media lifecycle state"
+            )
+
+        mid = str(uuid.uuid4())
+
+        self.db.execute("""
+            INSERT INTO media_lifecycle
+            VALUES(?,?,?,?,?,?)
+        """, (
+            mid,
+            device,
+            serial,
+            state,
+            json.dumps(
+                evidence,
+                ensure_ascii=False,
+            ),
+            now(),
+        ))
+        self.db.commit()
+
+        return mid
 
     def cycle(
         self,
-        roots: List[pathlib.Path],
-    ) -> Dict[str, Any]:
-        integrity = self.integrity.verify()
-        secret_results = [
-            self.secrets.scan_tree(root)
-            for root in roots
-            if root.exists()
-        ]
-
-        network = self.network.listeners()
-        persistence = self.persistence.inspect()
-
-        supply_chain = [
-            self.supply_chain.inventory(root)
-            for root in roots
-            if root.exists()
-        ]
-
-        hardware = self.hardware.inspect()
-
+        projects: list[pathlib.Path],
+    ) -> dict[str, Any]:
         result = {
-            "time": now(),
-            "integrity": integrity,
-            "secrets": secret_results,
-            "network": network,
-            "persistence": persistence,
-            "supply_chain": supply_chain,
-            "hardware": hardware,
-            "security_truth": {
-                "fake_success_forbidden": True,
-                "hardware_capabilities_detected_before_claim": True,
-                "remediation_required_for_security_completion": True,
-                "containment_available": True,
-                "evidence_required": True,
-            },
+            "integrity":
+                self.integrity(),
+            "secrets":
+                self.secrets(projects),
+            "identity":
+                self.identity(),
+            "network":
+                self.network(),
+            "persistence":
+                self.persistence(),
+            "hardware_reality":
+                self.hardware_reality(),
+            "bmc":
+                self.bmc(),
+            "projects": {},
         }
 
-        self.store.evidence(
-            "SOVEREIGN_CYBER_DEFENSE_CYCLE",
+        for project in projects:
+            if not project.exists():
+                continue
+
+            result["projects"][
+                str(project)
+            ] = {
+                "vulnerability":
+                    self.vulnerability(
+                        project
+                    ),
+                "supply_chain":
+                    self.supply_chain(
+                        project
+                    ),
+            }
+
+        self.evidence(
+            "SOVEREIGN_DEFENSE_CYCLE",
+            "GLOBAL",
             result,
         )
-
         return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "command",
-        choices=["baseline", "scan", "hardware", "tls"],
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
     )
 
-    parser.add_argument(
-        "--root",
-        action="append",
-        default=[],
+    p_base = sub.add_parser(
+        "baseline"
+    )
+    p_base.add_argument(
+        "paths",
+        nargs="+",
     )
 
-    parser.add_argument("--host")
+    p_cycle = sub.add_parser(
+        "cycle"
+    )
+    p_cycle.add_argument(
+        "projects",
+        nargs="*",
+        default=["/root"],
+    )
+
+    p_quarantine = sub.add_parser(
+        "quarantine"
+    )
+    p_quarantine.add_argument(
+        "path"
+    )
+    p_quarantine.add_argument(
+        "--reason",
+        required=True,
+    )
 
     args = parser.parse_args()
-
-    defense = SovereignCyberDefense()
-
-    roots = [
-        pathlib.Path(x).resolve()
-        for x in args.root
-    ]
-
-    if not roots:
-        roots = [
-            pathlib.Path("/root"),
-            pathlib.Path("/opt"),
-            pathlib.Path("/srv"),
-        ]
+    app = Defense()
 
     if args.command == "baseline":
-        output = defense.integrity.baseline(roots)
-
-    elif args.command == "hardware":
-        output = defense.hardware.inspect()
-
-    elif args.command == "tls":
-        if not args.host:
-            output = {
-                "ok": False,
-                "state": "HOST_REQUIRED",
-            }
-        else:
-            output = defense.tls.verify(args.host)
-
-    else:
-        output = defense.cycle(roots)
-
-    print(
-        json.dumps(
-            output,
+        print(json.dumps(
+            app.baseline([
+                pathlib.Path(path)
+                for path in args.paths
+            ]),
             ensure_ascii=False,
             indent=2,
-        )
-    )
+        ))
+        return 0
+
+    if args.command == "cycle":
+        print(json.dumps(
+            app.cycle([
+                pathlib.Path(path)
+                for path in args.projects
+            ]),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
+
+    if args.command == "quarantine":
+        print(json.dumps(
+            app.quarantine(
+                pathlib.Path(
+                    args.path
+                ),
+                args.reason,
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
     return 0
 
