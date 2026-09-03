@@ -2,26 +2,29 @@
 # -*- coding: utf-8 -*-
 
 """
-MAJD SOVEREIGN MAINTENANCE PLATFORM
-FILE 02 — MAJD-MAINTENANCE-EXECUTOR-02.py
+MAJD MAINTENANCE — FILE 02
+MAJD-MAINTENANCE-EXECUTOR-02.py
 
-REAL EXECUTION LAYER.
+REAL EXECUTION HAND
 
-Responsibilities:
-- backup before destructive change
-- code write/repair/rebuild
-- syntax/build/test
-- Git operations
-- Linux/systemd/Nginx
-- databases/storage
-- migrations
-- API/webhook verification
-- DNS/TLS verification
-- release/deploy/rollback
-- migration and sovereignty exit
-- decommission
-- evidence
-- never invent credentials or external success
+Implements controlled execution for:
+code/build/refactor/rebuild
+dependencies
+Git/MAJD-GIT
+n8n/MAJD-IN
+Linux/systemd/Nginx
+DB/storage/queues
+API/webhooks
+payments
+email
+DNS/TLS
+backups/restores
+deployment/rollback
+migration
+sovereignty exit
+decommission
+
+SUPREME_OWNER remains highest authority.
 """
 
 from __future__ import annotations
@@ -33,743 +36,1319 @@ import json
 import os
 import pathlib
 import shutil
-import socket
 import sqlite3
-import ssl
 import subprocess
-import sys
 import tarfile
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 ROOT = pathlib.Path(
-    os.environ.get("MAJD_MAINTENANCE_ROOT", "/var/lib/majd-maintenance")
+    os.environ.get(
+        "MAJD_MAINTENANCE_STATE",
+        "/var/lib/majd-maintenance",
+    )
 ).resolve()
 
-DB = ROOT / "majd-sovereign.db"
+DB = ROOT / "majd-maintenance.sqlite3"
 BACKUPS = ROOT / "backups"
-RELEASES = ROOT / "releases"
+QUEUE = ROOT / "queue"
 EVIDENCE = ROOT / "evidence"
+STAGING = ROOT / "staging"
+MIGRATIONS = ROOT / "migrations"
+
 OWNER = "SUPREME_OWNER"
+
+SERVICE_ACTIONS = {
+    "start",
+    "stop",
+    "restart",
+    "reload",
+    "enable",
+    "disable",
+}
 
 
 def now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def sha256_file(path: pathlib.Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(1024 * 1024)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
+def stable(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
-def command(
-    args: List[str],
-    cwd: Optional[pathlib.Path] = None,
-    timeout: int = 300,
-) -> Dict[str, Any]:
-    started = time.monotonic()
+def sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def run(
+    argv: list[str],
+    *,
+    cwd: str | None = None,
+    timeout: int = 900,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     try:
-        cp = subprocess.run(
-            args,
-            cwd=str(cwd) if cwd else None,
+        process = subprocess.run(
+            argv,
+            cwd=cwd,
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
         return {
-            "command": args,
-            "returncode": cp.returncode,
-            "stdout": cp.stdout[-200000:],
-            "stderr": cp.stderr[-200000:],
-            "duration": round(time.monotonic() - started, 4),
-            "ok": cp.returncode == 0,
+            "argv": argv,
+            "returncode": process.returncode,
+            "stdout": process.stdout[-300000:],
+            "stderr": process.stderr[-150000:],
         }
     except Exception as exc:
         return {
-            "command": args,
-            "returncode": None,
+            "argv": argv,
+            "returncode": -1,
             "stdout": "",
             "stderr": repr(exc),
-            "duration": round(time.monotonic() - started, 4),
-            "ok": False,
         }
 
 
-class ExecutorStore:
+class Executor:
     def __init__(self):
-        ROOT.mkdir(parents=True, exist_ok=True)
-        BACKUPS.mkdir(parents=True, exist_ok=True)
-        RELEASES.mkdir(parents=True, exist_ok=True)
-        EVIDENCE.mkdir(parents=True, exist_ok=True)
+        for directory in (
+            ROOT,
+            BACKUPS,
+            QUEUE,
+            EVIDENCE,
+            STAGING,
+            MIGRATIONS,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
 
-        self.db = sqlite3.connect(DB, timeout=30)
+        self.db = sqlite3.connect(DB)
         self.db.row_factory = sqlite3.Row
 
-        self.db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS executions(
-                id TEXT PRIMARY KEY,
-                decision_id TEXT,
-                action TEXT NOT NULL,
-                target TEXT NOT NULL,
-                backup_id TEXT,
-                state TEXT NOT NULL,
-                result TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                finished_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS backups(
-                id TEXT PRIMARY KEY,
-                target TEXT NOT NULL,
-                archive TEXT NOT NULL,
-                sha256 TEXT NOT NULL,
-                verified INTEGER NOT NULL,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS deployments(
-                id TEXT PRIMARY KEY,
-                target TEXT NOT NULL,
-                release_hash TEXT NOT NULL,
-                previous_release TEXT,
-                verification TEXT NOT NULL,
-                state TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            """
-        )
-        self.db.commit()
-
-    def evidence(self, subject: str, payload: Dict[str, Any]) -> pathlib.Path:
-        eid = str(uuid.uuid4())
-        path = EVIDENCE / f"executor-{eid}.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "id": eid,
-                    "subject": subject,
-                    "created_at": now(),
-                    "payload": payload,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return path
-
-
-class BackupEngine:
-    def __init__(self, store: ExecutorStore):
-        self.store = store
-
-    def create(self, target: pathlib.Path) -> Dict[str, Any]:
-        target = target.resolve()
-
-        if not target.exists():
-            return {
-                "ok": False,
-                "state": "TARGET_NOT_FOUND",
-                "target": str(target),
-            }
-
-        bid = str(uuid.uuid4())
-        archive = BACKUPS / f"{bid}.tar.gz"
-
-        with tarfile.open(archive, "w:gz") as tar:
-            tar.add(target, arcname=target.name)
-
-        checksum = sha256_file(archive)
-
-        # Archive verification is real: reopen and enumerate members.
-        with tarfile.open(archive, "r:gz") as tar:
-            members = tar.getmembers()
-            verified = len(members) > 0
-
-        self.store.db.execute(
-            "INSERT INTO backups VALUES(?,?,?,?,?,?)",
-            (
-                bid,
-                str(target),
-                str(archive),
-                checksum,
-                int(verified),
-                now(),
-            ),
-        )
-        self.store.db.commit()
-
-        result = {
-            "ok": verified,
-            "backup_id": bid,
-            "target": str(target),
-            "archive": str(archive),
-            "sha256": checksum,
-            "members": len(members),
-            "verified": verified,
-        }
-
-        self.store.evidence("BACKUP", result)
-        return result
-
-    def restore_to(
+    def evidence(
         self,
-        backup_id: str,
-        destination: pathlib.Path,
-    ) -> Dict[str, Any]:
-        row = self.store.db.execute(
-            "SELECT * FROM backups WHERE id=?",
-            (backup_id,),
-        ).fetchone()
+        category: str,
+        subject: str,
+        payload: Any,
+    ) -> str:
+        eid = str(uuid.uuid4())
+        raw = stable(payload)
+        digest = sha(raw.encode())
 
-        if not row:
-            return {"ok": False, "state": "BACKUP_NOT_FOUND"}
+        self.db.execute("""
+            INSERT INTO evidence
+            (id,category,subject,payload,sha256,created_at)
+            VALUES(?,?,?,?,?,?)
+        """, (
+            eid,
+            category,
+            subject,
+            raw,
+            digest,
+            now(),
+        ))
+        self.db.commit()
+        return eid
 
-        archive = pathlib.Path(row["archive"])
+    def backup(
+        self,
+        path: pathlib.Path,
+    ) -> dict[str, Any]:
+        path = path.resolve()
 
-        if not archive.exists():
-            return {"ok": False, "state": "ARCHIVE_MISSING"}
+        if not path.exists():
+            raise FileNotFoundError(path)
 
-        if sha256_file(archive) != row["sha256"]:
-            return {"ok": False, "state": "BACKUP_INTEGRITY_FAILURE"}
+        target = BACKUPS / (
+            f"{path.name}-"
+            f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}-"
+            f"{uuid.uuid4().hex[:8]}.tar.gz"
+        )
 
-        destination.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(target, "w:gz") as archive:
+            archive.add(path, arcname=path.name)
 
-        with tarfile.open(archive, "r:gz") as tar:
-            destination_real = destination.resolve()
+        with tarfile.open(target, "r:gz") as archive:
+            members = archive.getmembers()
 
-            for member in tar.getmembers():
-                target = (destination_real / member.name).resolve()
-                if destination_real not in target.parents and target != destination_real:
-                    return {
-                        "ok": False,
-                        "state": "UNSAFE_ARCHIVE_MEMBER",
-                        "member": member.name,
-                    }
-
-            tar.extractall(destination_real)
+        if not members:
+            raise RuntimeError("backup verification failed")
 
         result = {
-            "ok": True,
-            "backup_id": backup_id,
-            "destination": str(destination),
+            "source": str(path),
+            "backup": str(target),
+            "size": target.stat().st_size,
+            "members": len(members),
             "verified": True,
         }
 
-        self.store.evidence("RESTORE", result)
+        self.evidence(
+            "BACKUP_VERIFIED",
+            str(path),
+            result,
+        )
         return result
 
+    def restore_test(
+        self,
+        backup: pathlib.Path,
+    ) -> dict[str, Any]:
+        if not backup.exists():
+            raise FileNotFoundError(backup)
 
-class CodeEngine:
-    def __init__(self, store: ExecutorStore):
-        self.store = store
+        with tempfile.TemporaryDirectory(
+            prefix="majd-restore-"
+        ) as temp:
+            with tarfile.open(backup, "r:gz") as archive:
+                archive.extractall(
+                    temp,
+                    filter="data",
+                )
 
-    def validate_python(self, path: pathlib.Path) -> Dict[str, Any]:
-        return command(
-            [sys.executable, "-m", "py_compile", str(path)],
-            timeout=120,
+            restored = list(
+                pathlib.Path(temp).rglob("*")
+            )
+
+            result = {
+                "backup": str(backup),
+                "restored_entries": len(restored),
+                "verified": len(restored) > 0,
+            }
+
+        self.evidence(
+            "RESTORE_VERIFICATION",
+            str(backup),
+            result,
         )
-
-    def validate_tree(self, root: pathlib.Path) -> Dict[str, Any]:
-        files = list(root.rglob("*.py"))
-        results = [self.validate_python(p) for p in files]
-
-        return {
-            "ok": all(x["ok"] for x in results),
-            "files": len(files),
-            "results": results,
-        }
+        return result
 
     def atomic_write(
         self,
         path: pathlib.Path,
-        content: str,
-        expected_sha256: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        content: bytes,
+    ) -> dict[str, Any]:
         path = path.resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-        previous_hash = (
-            sha256_file(path)
-            if path.exists() and path.is_file()
+        backup = (
+            self.backup(path)
+            if path.exists()
             else None
         )
 
-        if expected_sha256 and previous_hash != expected_sha256:
-            return {
-                "ok": False,
-                "state": "CONCURRENT_CHANGE_DETECTED",
-                "expected": expected_sha256,
-                "actual": previous_hash,
-            }
-
-        backup = None
-        if path.exists():
-            backup = BackupEngine(self.store).create(path)
-            if not backup["ok"]:
-                return {
-                    "ok": False,
-                    "state": "BACKUP_FAILED",
-                    "backup": backup,
-                }
-
-        path.parent.mkdir(parents=True, exist_ok=True)
+        old_mode = (
+            path.stat().st_mode & 0o777
+            if path.exists()
+            else 0o640
+        )
 
         fd, temp_name = tempfile.mkstemp(
-            prefix=".majd-write-",
             dir=str(path.parent),
+            prefix=f".{path.name}.",
         )
 
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
 
+            os.chmod(temp_name, old_mode)
             os.replace(temp_name, path)
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
 
-        validation = (
-            self.validate_python(path)
-            if path.suffix == ".py"
-            else {"ok": True, "state": "NON_PYTHON"}
-        )
-
-        if not validation["ok"] and backup:
-            restore_dir = pathlib.Path(
-                tempfile.mkdtemp(prefix="majd-rollback-")
-            )
-
-            restored = BackupEngine(self.store).restore_to(
-                backup["backup_id"],
-                restore_dir,
-            )
-
-            if restored["ok"]:
-                restored_file = restore_dir / path.name
-                if restored_file.exists():
-                    shutil.copy2(restored_file, path)
-
-            return {
-                "ok": False,
-                "state": "VALIDATION_FAILED_ROLLED_BACK",
-                "validation": validation,
-                "rollback": restored,
-            }
-
         result = {
-            "ok": True,
-            "state": "WRITTEN_AND_VALIDATED",
             "path": str(path),
-            "sha256": sha256_file(path),
+            "sha256": sha(content),
             "backup": backup,
-            "validation": validation,
         }
 
-        self.store.evidence("CODE_WRITE", result)
+        self.evidence(
+            "ATOMIC_WRITE",
+            str(path),
+            result,
+        )
         return result
 
+    def code_quality(
+        self,
+        project: pathlib.Path,
+    ) -> dict[str, Any]:
+        project = project.resolve()
+        result: dict[str, Any] = {}
 
-class GitEngine:
-    def inspect(self, repo: pathlib.Path) -> Dict[str, Any]:
-        return {
-            "status": command(["git", "status", "--porcelain=v1"], repo),
-            "branch": command(["git", "branch", "--show-current"], repo),
-            "remote": command(["git", "remote", "-v"], repo),
-            "history": command(
-                ["git", "log", "-n", "20", "--oneline", "--decorate"],
-                repo,
-            ),
+        py_files = list(project.rglob("*.py"))
+        failures = []
+
+        for file in py_files:
+            check = run([
+                "python3",
+                "-m",
+                "py_compile",
+                str(file),
+            ])
+
+            if check["returncode"] != 0:
+                failures.append({
+                    "file": str(file),
+                    "stderr": check["stderr"],
+                })
+
+        result["python_compile"] = {
+            "files": len(py_files),
+            "failures": failures,
+            "success": not failures,
         }
 
-    def verify_repository(self, repo: pathlib.Path) -> Dict[str, Any]:
-        fsck = command(["git", "fsck", "--full"], repo, timeout=600)
-        return {"ok": fsck["ok"], "fsck": fsck}
+        if shutil.which("pytest"):
+            result["pytest"] = run(
+                ["pytest", "-q"],
+                cwd=str(project),
+                timeout=1800,
+            )
 
-    def create_release_commit(
+        if (
+            (project / "package.json").exists()
+            and shutil.which("npm")
+        ):
+            result["npm_test"] = run(
+                ["npm", "test", "--", "--runInBand"],
+                cwd=str(project),
+                timeout=1800,
+            )
+
+            result["npm_build"] = run(
+                ["npm", "run", "build"],
+                cwd=str(project),
+                timeout=1800,
+            )
+
+        self.evidence(
+            "SOFTWARE_FACTORY_VERIFICATION",
+            str(project),
+            result,
+        )
+        return result
+
+    def git_snapshot(
         self,
         repo: pathlib.Path,
-        message: str,
-    ) -> Dict[str, Any]:
-        status = command(["git", "status", "--porcelain"], repo)
+    ) -> dict[str, Any]:
+        repo = repo.resolve()
 
-        if not status["ok"]:
-            return {"ok": False, "status": status}
+        if not (repo / ".git").exists():
+            raise ValueError("not a git repository")
 
-        if not status["stdout"].strip():
-            return {
-                "ok": True,
-                "state": "NO_CHANGES",
-            }
+        backup = self.backup(repo)
 
-        add = command(["git", "add", "-A"], repo)
-        if not add["ok"]:
-            return {"ok": False, "add": add}
+        bundle = BACKUPS / (
+            f"{repo.name}-{uuid.uuid4().hex}.bundle"
+        )
 
-        commit = command(["git", "commit", "-m", message], repo)
-        return {
-            "ok": commit["ok"],
-            "add": add,
-            "commit": commit,
+        bundle_result = run([
+            "git",
+            "-C",
+            str(repo),
+            "bundle",
+            "create",
+            str(bundle),
+            "--all",
+        ])
+
+        result = {
+            "backup": backup,
+            "bundle": str(bundle),
+            "bundle_result": bundle_result,
+            "head": run([
+                "git",
+                "-C",
+                str(repo),
+                "rev-parse",
+                "HEAD",
+            ]),
+            "status": run([
+                "git",
+                "-C",
+                str(repo),
+                "status",
+                "--porcelain",
+            ]),
         }
 
+        self.evidence(
+            "GIT_SNAPSHOT",
+            str(repo),
+            result,
+        )
+        return result
 
-class ServiceEngine:
-    def inspect(self, service: str) -> Dict[str, Any]:
-        return {
-            "active": command(["systemctl", "is-active", service]),
-            "enabled": command(["systemctl", "is-enabled", service]),
-            "status": command(
-                ["systemctl", "status", service, "--no-pager"],
-            ),
+    def git_fetch(
+        self,
+        repo: pathlib.Path,
+    ) -> dict[str, Any]:
+        snapshot = self.git_snapshot(repo)
+
+        fetch = run([
+            "git",
+            "-C",
+            str(repo),
+            "fetch",
+            "--all",
+            "--prune",
+            "--tags",
+        ])
+
+        result = {
+            "snapshot": snapshot,
+            "fetch": fetch,
         }
 
-    def restart_verified(self, service: str) -> Dict[str, Any]:
-        restart = command(["systemctl", "restart", service])
+        self.evidence(
+            "GIT_FETCH",
+            str(repo),
+            result,
+        )
+        return result
 
-        if not restart["ok"]:
-            return {
-                "ok": False,
-                "restart": restart,
-            }
+    def dependency_inventory(
+        self,
+        project: pathlib.Path,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {}
 
-        active = command(["systemctl", "is-active", service])
+        if (project / "requirements.txt").exists():
+            result["requirements"] = (
+                project / "requirements.txt"
+            ).read_text(errors="replace").splitlines()
 
-        return {
-            "ok": active["ok"] and active["stdout"].strip() == "active",
-            "restart": restart,
-            "verification": active,
+        if (
+            (project / "package-lock.json").exists()
+        ):
+            result["package_lock_sha256"] = sha(
+                (project / "package-lock.json")
+                .read_bytes()
+            )
+
+        if shutil.which("pip-audit"):
+            result["pip_audit"] = run([
+                "pip-audit",
+                "--format",
+                "json",
+            ], cwd=str(project))
+
+        if (
+            shutil.which("npm")
+            and (project / "package.json").exists()
+        ):
+            result["npm_audit"] = run([
+                "npm",
+                "audit",
+                "--json",
+            ], cwd=str(project))
+
+        if shutil.which("syft"):
+            result["sbom"] = run([
+                "syft",
+                str(project),
+                "-o",
+                "cyclonedx-json",
+            ], timeout=1800)
+
+        self.evidence(
+            "DEPENDENCY_SUPPLY_CHAIN",
+            str(project),
+            result,
+        )
+        return result
+
+    def systemd(
+        self,
+        service: str,
+        action: str,
+    ) -> dict[str, Any]:
+        if action not in SERVICE_ACTIONS:
+            raise ValueError("action denied")
+
+        if (
+            "/" in service
+            or not service.endswith(".service")
+        ):
+            raise ValueError("invalid service")
+
+        before = run([
+            "systemctl",
+            "show",
+            service,
+            "--property=ActiveState,SubState,UnitFileState",
+        ])
+
+        execution = run([
+            "systemctl",
+            action,
+            service,
+        ])
+
+        after = run([
+            "systemctl",
+            "show",
+            service,
+            "--property=ActiveState,SubState,UnitFileState",
+        ])
+
+        result = {
+            "before": before,
+            "execution": execution,
+            "after": after,
         }
 
+        self.evidence(
+            "SYSTEMD_EXECUTION",
+            service,
+            result,
+        )
+        return result
 
-class NginxEngine:
-    def validate(self) -> Dict[str, Any]:
+    def nginx_reload(self) -> dict[str, Any]:
         if not shutil.which("nginx"):
             return {
-                "ok": False,
-                "state": "NGINX_NOT_INSTALLED",
+                "state":
+                    "EXTERNAL_DEPENDENCY_REQUIRED",
+                "dependency": "nginx executable",
             }
 
-        return command(["nginx", "-t"])
+        validation = run(["nginx", "-t"])
 
-    def reload_verified(self) -> Dict[str, Any]:
-        validation = self.validate()
-
-        if not validation["ok"]:
+        if validation["returncode"] != 0:
             return {
-                "ok": False,
+                "state": "DENIED",
                 "validation": validation,
             }
 
-        reload_result = command(["systemctl", "reload", "nginx"])
+        execution = run([
+            "systemctl",
+            "reload",
+            "nginx",
+        ])
 
-        return {
-            "ok": reload_result["ok"],
+        result = {
             "validation": validation,
-            "reload": reload_result,
+            "execution": execution,
         }
 
+        self.evidence(
+            "NGINX_RELOAD",
+            "nginx",
+            result,
+        )
+        return result
 
-class TLSVerifier:
-    def verify(self, host: str, port: int = 443) -> Dict[str, Any]:
+    def sqlite_backup(
+        self,
+        source: pathlib.Path,
+    ) -> dict[str, Any]:
+        source = source.resolve()
+
+        target = BACKUPS / (
+            f"{source.name}-"
+            f"{uuid.uuid4().hex}.sqlite3"
+        )
+
+        src = sqlite3.connect(str(source))
+        dst = sqlite3.connect(str(target))
+
+        with dst:
+            src.backup(dst)
+
+        integrity = dst.execute(
+            "PRAGMA integrity_check"
+        ).fetchone()[0]
+
+        src.close()
+        dst.close()
+
+        result = {
+            "source": str(source),
+            "backup": str(target),
+            "integrity": integrity,
+            "verified": integrity == "ok",
+        }
+
+        self.evidence(
+            "DATABASE_BACKUP",
+            str(source),
+            result,
+        )
+        return result
+
+    def sqlite_integrity(
+        self,
+        path: pathlib.Path,
+    ) -> dict[str, Any]:
+        db = sqlite3.connect(
+            f"file:{path.resolve()}?mode=ro",
+            uri=True,
+        )
+
+        integrity = db.execute(
+            "PRAGMA integrity_check"
+        ).fetchall()
+
+        foreign = db.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+
+        db.close()
+
+        result = {
+            "integrity": [x[0] for x in integrity],
+            "foreign_key_errors":
+                [list(x) for x in foreign],
+            "verified": (
+                len(integrity) == 1
+                and integrity[0][0] == "ok"
+                and not foreign
+            ),
+        }
+
+        self.evidence(
+            "DATABASE_INTEGRITY",
+            str(path),
+            result,
+        )
+        return result
+
+    def postgres_backup(
+        self,
+        dsn: str,
+    ) -> dict[str, Any]:
+        if not shutil.which("pg_dump"):
+            return {
+                "state":
+                    "EXTERNAL_DEPENDENCY_REQUIRED",
+                "dependency": "pg_dump",
+            }
+
+        output = BACKUPS / (
+            f"postgres-{uuid.uuid4().hex}.dump"
+        )
+
+        result = run([
+            "pg_dump",
+            "--format=custom",
+            "--file",
+            str(output),
+            dsn,
+        ], timeout=3600)
+
+        verified = (
+            result["returncode"] == 0
+            and output.exists()
+            and output.stat().st_size > 0
+        )
+
+        payload = {
+            "execution": result,
+            "backup": str(output),
+            "verified": verified,
+        }
+
+        self.evidence(
+            "POSTGRES_BACKUP",
+            "postgres",
+            payload,
+        )
+        return payload
+
+    def redis_health(self) -> dict[str, Any]:
+        if not shutil.which("redis-cli"):
+            return {
+                "state": "NOT_VISIBLE",
+            }
+
+        result = run([
+            "redis-cli",
+            "--no-auth-warning",
+            "PING",
+        ])
+
+        return {
+            "verified":
+                result["stdout"].strip() == "PONG",
+            "execution": result,
+        }
+
+    def http(
+        self,
+        url: str,
+        expected: int = 200,
+        method: str = "GET",
+        body: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        data = (
+            json.dumps(body).encode()
+            if body is not None
+            else None
+        )
+
+        request = urllib.request.Request(
+            url,
+            data=data,
+            method=method.upper(),
+            headers=headers or {},
+        )
+
+        started = time.monotonic()
+
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=30,
+            ) as response:
+                payload = response.read(
+                    1024 * 1024
+                )
+
+                result = {
+                    "verified":
+                        response.status == expected,
+                    "status": response.status,
+                    "expected": expected,
+                    "latency_ms": round(
+                        (
+                            time.monotonic()
+                            - started
+                        ) * 1000,
+                        2,
+                    ),
+                    "body_sha256": sha(payload),
+                }
+        except Exception as exc:
+            result = {
+                "verified": False,
+                "error": repr(exc),
+            }
+
+        self.evidence(
+            "HTTP_TRANSACTION",
+            url,
+            result,
+        )
+        return result
+
+    def webhook_verify_hmac(
+        self,
+        body: bytes,
+        signature: str,
+        secret: str,
+        algorithm: str = "sha256",
+    ) -> bool:
+        import hmac
+
+        digestmod = getattr(
+            hashlib,
+            algorithm,
+        )
+
+        expected = hmac.new(
+            secret.encode(),
+            body,
+            digestmod,
+        ).hexdigest()
+
+        return hmac.compare_digest(
+            expected,
+            signature,
+        )
+
+    def external_provider(
+        self,
+        provider: str,
+        required_environment: list[str],
+    ) -> dict[str, Any]:
+        missing = [
+            key
+            for key in required_environment
+            if not os.environ.get(key)
+        ]
+
+        if missing:
+            return {
+                "state":
+                    "EXTERNAL_DEPENDENCY_REQUIRED",
+                "provider": provider,
+                "missing": missing,
+            }
+
+        return {
+            "state":
+                "CONFIGURATION_PRESENT_REQUIRES_REAL_TRANSACTION_VERIFICATION",
+            "provider": provider,
+        }
+
+    def payment_provider(self) -> dict[str, Any]:
+        return self.external_provider(
+            "PAYMENT_PROVIDER",
+            [
+                "MAJD_PAYMENT_API_KEY",
+                "MAJD_PAYMENT_BASE_URL",
+            ],
+        )
+
+    def email_provider(self) -> dict[str, Any]:
+        return self.external_provider(
+            "EMAIL_PROVIDER",
+            [
+                "MAJD_EMAIL_API_KEY",
+                "MAJD_EMAIL_BASE_URL",
+            ],
+        )
+
+    def n8n(self) -> dict[str, Any]:
+        base = os.environ.get(
+            "MAJD_N8N_BASE_URL"
+        )
+
+        token = os.environ.get(
+            "MAJD_N8N_API_KEY"
+        )
+
+        if not base or not token:
+            return {
+                "state":
+                    "EXTERNAL_DEPENDENCY_REQUIRED",
+                "missing": [
+                    name
+                    for name, value in {
+                        "MAJD_N8N_BASE_URL": base,
+                        "MAJD_N8N_API_KEY": token,
+                    }.items()
+                    if not value
+                ],
+            }
+
+        return self.http(
+            base.rstrip("/") + "/api/v1/workflows",
+            expected=200,
+            headers={
+                "X-N8N-API-KEY": token,
+            },
+        )
+
+    def dns_query(
+        self,
+        domain: str,
+    ) -> dict[str, Any]:
+        result = {
+            "domain": domain,
+            "addresses": [],
+        }
+
+        try:
+            infos = socket.getaddrinfo(
+                domain,
+                None,
+            )
+
+            result["addresses"] = sorted({
+                item[4][0]
+                for item in infos
+            })
+            result["verified"] = True
+        except Exception as exc:
+            result["verified"] = False
+            result["error"] = repr(exc)
+
+        self.evidence(
+            "DNS_VERIFICATION",
+            domain,
+            result,
+        )
+        return result
+
+    def tls_certificate(
+        self,
+        host: str,
+        port: int = 443,
+    ) -> dict[str, Any]:
+        import ssl
+
         context = ssl.create_default_context()
 
         try:
-            with socket.create_connection((host, port), timeout=10) as raw:
+            with socket.create_connection(
+                (host, port),
+                timeout=10,
+            ) as raw:
                 with context.wrap_socket(
                     raw,
                     server_hostname=host,
                 ) as tls:
                     cert = tls.getpeercert()
-                    return {
-                        "ok": True,
+
+                    result = {
+                        "verified": True,
                         "protocol": tls.version(),
                         "cipher": tls.cipher(),
-                        "certificate": cert,
+                        "not_after":
+                            cert.get("notAfter"),
+                        "subject_alt_name":
+                            cert.get(
+                                "subjectAltName",
+                                [],
+                            ),
                     }
         except Exception as exc:
-            return {
-                "ok": False,
+            result = {
+                "verified": False,
                 "error": repr(exc),
             }
 
+        self.evidence(
+            "TLS_VERIFICATION",
+            host,
+            result,
+        )
+        return result
 
-class HTTPVerifier:
-    def verify(
+    def migration_inventory(
         self,
-        url: str,
-        expected_status: int = 200,
-        timeout: int = 20,
-    ) -> Dict[str, Any]:
-        started = time.monotonic()
+        repo: pathlib.Path,
+    ) -> dict[str, Any]:
+        repo = repo.resolve()
 
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "MAJD-Sovereign-Verifier/1.0"},
-            )
-
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                body = response.read(1024 * 1024)
-
-                return {
-                    "ok": response.status == expected_status,
-                    "status": response.status,
-                    "expected": expected_status,
-                    "duration": round(time.monotonic() - started, 4),
-                    "body_sha256": hashlib.sha256(body).hexdigest(),
-                }
-
-        except Exception as exc:
-            return {
-                "ok": False,
-                "error": repr(exc),
-                "duration": round(time.monotonic() - started, 4),
-            }
-
-
-class DatabaseEngine:
-    def sqlite_integrity(self, path: pathlib.Path) -> Dict[str, Any]:
-        try:
-            db = sqlite3.connect(path)
-            rows = db.execute("PRAGMA integrity_check").fetchall()
-            db.close()
-
-            values = [x[0] for x in rows]
-
-            return {
-                "ok": values == ["ok"],
-                "result": values,
-            }
-
-        except Exception as exc:
-            return {
-                "ok": False,
-                "error": repr(exc),
-            }
-
-    def sqlite_backup(
-        self,
-        source: pathlib.Path,
-        destination: pathlib.Path,
-    ) -> Dict[str, Any]:
-        try:
-            src = sqlite3.connect(source)
-            dst = sqlite3.connect(destination)
-
-            with dst:
-                src.backup(dst)
-
-            src.close()
-            dst.close()
-
-            integrity = self.sqlite_integrity(destination)
-
-            return {
-                "ok": integrity["ok"],
-                "destination": str(destination),
-                "integrity": integrity,
-            }
-
-        except Exception as exc:
-            return {
-                "ok": False,
-                "error": repr(exc),
-            }
-
-
-class MigrationEngine:
-    def __init__(self, store: ExecutorStore):
-        self.store = store
-
-    def inventory(self, source: pathlib.Path) -> Dict[str, Any]:
-        files = []
-
-        for p in source.rglob("*"):
-            if p.is_file():
-                try:
-                    files.append(
-                        {
-                            "path": str(p.relative_to(source)),
-                            "size": p.stat().st_size,
-                            "sha256": sha256_file(p),
-                        }
-                    )
-                except OSError:
-                    continue
-
-        return {
-            "source": str(source),
-            "files": files,
-            "count": len(files),
+        inventory = {
+            "repo": str(repo),
+            "git": (repo / ".git").exists(),
+            "branches": [],
+            "tags": [],
+            "remotes": [],
+            "databases": [],
+            "environment_files": [],
+            "deployment_files": [],
+            "workflows": [],
         }
 
-    def copy_and_verify(
+        if inventory["git"]:
+            inventory["branches"] = run([
+                "git",
+                "-C",
+                str(repo),
+                "branch",
+                "-a",
+            ])["stdout"].splitlines()
+
+            inventory["tags"] = run([
+                "git",
+                "-C",
+                str(repo),
+                "tag",
+                "--list",
+            ])["stdout"].splitlines()
+
+            inventory["remotes"] = run([
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "-v",
+            ])["stdout"].splitlines()
+
+        for path in repo.rglob("*"):
+            if not path.is_file():
+                continue
+
+            lower = path.name.lower()
+
+            if lower.endswith(
+                (".sqlite", ".sqlite3", ".db")
+            ):
+                inventory["databases"].append(
+                    str(path)
+                )
+
+            if lower.startswith(".env"):
+                inventory[
+                    "environment_files"
+                ].append({
+                    "path": str(path),
+                    "secret_values":
+                        "NOT_CAPTURED",
+                })
+
+            if lower in {
+                "dockerfile",
+                "docker-compose.yml",
+                "docker-compose.yaml",
+                "railway.json",
+                "railway.toml",
+                "nginx.conf",
+            }:
+                inventory[
+                    "deployment_files"
+                ].append(str(path))
+
+            if ".github/workflows" in str(path):
+                inventory[
+                    "workflows"
+                ].append(str(path))
+
+        self.evidence(
+            "MIGRATION_INVENTORY",
+            str(repo),
+            inventory,
+        )
+        return inventory
+
+    def migration_snapshot(
         self,
-        source: pathlib.Path,
-        destination: pathlib.Path,
-    ) -> Dict[str, Any]:
-        before = self.inventory(source)
+        repo: pathlib.Path,
+    ) -> dict[str, Any]:
+        inventory = self.migration_inventory(repo)
+        snapshot = self.git_snapshot(repo)
 
-        if destination.exists():
-            backup = BackupEngine(self.store).create(destination)
-            if not backup["ok"]:
-                return {
-                    "ok": False,
-                    "state": "DESTINATION_BACKUP_FAILED",
-                }
+        db_backups = []
 
-        shutil.copytree(
-            source,
-            destination,
-            dirs_exist_ok=True,
-            symlinks=True,
+        for item in inventory["databases"]:
+            try:
+                db_backups.append(
+                    self.sqlite_backup(
+                        pathlib.Path(item)
+                    )
+                )
+            except Exception as exc:
+                db_backups.append({
+                    "path": item,
+                    "error": repr(exc),
+                })
+
+        result = {
+            "inventory": inventory,
+            "repository_snapshot": snapshot,
+            "database_backups": db_backups,
+            "cutover":
+                "REQUIRES_TARGET_AND_VERIFICATION",
+            "rollback":
+                "SOURCE_REMAINS_UNCHANGED_UNTIL_VERIFIED",
+        }
+
+        self.evidence(
+            "COMPLETE_MIGRATION_SNAPSHOT",
+            str(repo),
+            result,
+        )
+        return result
+
+    def decommission_gate(
+        self,
+        resource: str,
+        checks: dict[str, bool],
+    ) -> dict[str, Any]:
+        required = {
+            "backup_verified",
+            "dependencies_cleared",
+            "traffic_drained",
+            "data_handled",
+            "secret_revocation_planned",
+            "dns_cleanup_planned",
+            "provider_cancellation_authorized",
+            "cross_platform_impact_cleared",
+        }
+
+        missing = sorted(
+            key
+            for key in required
+            if not checks.get(key)
         )
 
-        after = self.inventory(destination)
-
-        before_map = {
-            x["path"]: x["sha256"]
-            for x in before["files"]
-        }
-
-        after_map = {
-            x["path"]: x["sha256"]
-            for x in after["files"]
-        }
-
-        mismatches = [
-            path
-            for path, value in before_map.items()
-            if after_map.get(path) != value
-        ]
-
         result = {
-            "ok": not mismatches,
-            "source_count": before["count"],
-            "destination_count": after["count"],
-            "mismatches": mismatches,
+            "resource": resource,
+            "allowed": not missing,
+            "missing": missing,
         }
 
-        self.store.evidence("MIGRATION_VERIFY", result)
+        self.evidence(
+            "DECOMMISSION_GATE",
+            resource,
+            result,
+        )
         return result
 
-
-class DecommissionEngine:
-    def __init__(self, store: ExecutorStore):
-        self.store = store
-
-    def prepare(
+    def independent_verification(
         self,
-        target: pathlib.Path,
-    ) -> Dict[str, Any]:
-        backup = BackupEngine(self.store).create(target)
+        platform: str,
+        change_id: str,
+        workflows: list[dict[str, Any]],
+        rollback: dict[str, Any],
+    ) -> str:
+        request_id = str(uuid.uuid4())
+
+        payload = {
+            "request_id": request_id,
+            "change_id": change_id,
+            "platform": platform,
+            "workflows": workflows,
+            "rollback": rollback,
+            "requested_by": "EXECUTOR_02",
+            "verifier": "RUNTIME_03",
+            "created_at": now(),
+        }
+
+        path = QUEUE / (
+            f"verify-{request_id}.json"
+        )
+
+        path.write_text(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        self.evidence(
+            "INDEPENDENT_VERIFICATION_REQUEST",
+            change_id,
+            payload,
+        )
+        return str(path)
+
+    def execute_queue_item(
+        self,
+        path: pathlib.Path,
+    ) -> dict[str, Any]:
+        request = json.loads(
+            path.read_text(encoding="utf-8")
+        )
+
+        action = request["action"]
+        payload = request["payload"]
+
+        handlers = {
+            "GIT_FETCH":
+                lambda:
+                self.git_fetch(
+                    pathlib.Path(payload["repo"])
+                ),
+
+            "PROJECT_VERIFY":
+                lambda:
+                self.code_quality(
+                    pathlib.Path(payload["project"])
+                ),
+
+            "SYSTEMD":
+                lambda:
+                self.systemd(
+                    payload["service"],
+                    payload["service_action"],
+                ),
+
+            "NGINX_RELOAD":
+                self.nginx_reload,
+
+            "HTTP_VERIFY":
+                lambda:
+                self.http(
+                    payload["url"],
+                    int(
+                        payload.get(
+                            "expected_status",
+                            200,
+                        )
+                    ),
+                ),
+
+            "DNS_VERIFY":
+                lambda:
+                self.dns_query(
+                    payload["domain"]
+                ),
+
+            "TLS_VERIFY":
+                lambda:
+                self.tls_certificate(
+                    payload["host"],
+                    int(payload.get("port", 443)),
+                ),
+
+            "N8N_VERIFY":
+                self.n8n,
+
+            "MIGRATION_SNAPSHOT":
+                lambda:
+                self.migration_snapshot(
+                    pathlib.Path(payload["repo"])
+                ),
+        }
+
+        if action not in handlers:
+            result = {
+                "state": "DENIED",
+                "reason":
+                    "ACTION_NOT_IN_CONTROLLED_EXECUTION_PRIMITIVES",
+            }
+        else:
+            result = handlers[action]()
+
+        self.evidence(
+            "EXECUTION_RESULT",
+            request["decision_id"],
+            result,
+        )
+
+        if payload.get(
+            "verification_workflows"
+        ):
+            self.independent_verification(
+                request["platform"],
+                request["decision_id"],
+                payload[
+                    "verification_workflows"
+                ],
+                payload.get("rollback", {}),
+            )
+
+        os.replace(
+            path,
+            path.with_suffix(".processed.json"),
+        )
+
+        return result
+
+    def cycle(self) -> dict[str, Any]:
+        results = []
+
+        for item in sorted(
+            QUEUE.glob("executor-*.json")
+        ):
+            try:
+                results.append({
+                    "queue": str(item),
+                    "result":
+                        self.execute_queue_item(item),
+                })
+            except Exception as exc:
+                self.evidence(
+                    "EXECUTOR_FAILURE",
+                    str(item),
+                    {"error": repr(exc)},
+                )
 
         return {
-            "ok": backup["ok"],
-            "state": (
-                "READY_FOR_AUTHORIZED_DECOMMISSION"
-                if backup["ok"]
-                else "BLOCKED"
-            ),
-            "backup": backup,
-            "destructive_action_performed": False,
-            "owner_authority_preserved": True,
+            "processed": len(results),
+            "results": results,
         }
-
-
-class SovereignExecutor:
-    def __init__(self):
-        self.store = ExecutorStore()
-        self.backup = BackupEngine(self.store)
-        self.code = CodeEngine(self.store)
-        self.git = GitEngine()
-        self.service = ServiceEngine()
-        self.nginx = NginxEngine()
-        self.http = HTTPVerifier()
-        self.tls = TLSVerifier()
-        self.database = DatabaseEngine()
-        self.migration = MigrationEngine(self.store)
-        self.decommission = DecommissionEngine(self.store)
-
-    def verify_release(
-        self,
-        target: pathlib.Path,
-        health_urls: List[str],
-    ) -> Dict[str, Any]:
-        code = self.code.validate_tree(target)
-        http = [self.http.verify(url) for url in health_urls]
-
-        result = {
-            "code": code,
-            "http": http,
-            "ok": code["ok"] and all(x["ok"] for x in http),
-        }
-
-        self.store.evidence("RELEASE_VERIFICATION", result)
-        return result
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+    )
 
-    backup = sub.add_parser("backup")
-    backup.add_argument("target")
+    sub.add_parser("cycle")
 
-    verify = sub.add_parser("verify")
-    verify.add_argument("target")
-    verify.add_argument("--url", action="append", default=[])
+    p_backup = sub.add_parser("backup")
+    p_backup.add_argument("path")
 
-    service = sub.add_parser("service")
-    service.add_argument("name")
+    p_restore = sub.add_parser("restore-test")
+    p_restore.add_argument("backup")
 
-    tls = sub.add_parser("tls")
-    tls.add_argument("host")
+    p_project = sub.add_parser("verify-project")
+    p_project.add_argument("project")
 
-    migrate = sub.add_parser("migrate")
-    migrate.add_argument("source")
-    migrate.add_argument("destination")
+    p_migration = sub.add_parser("migration-snapshot")
+    p_migration.add_argument("repo")
+
+    p_loop = sub.add_parser("loop")
+    p_loop.add_argument(
+        "--interval",
+        type=int,
+        default=30,
+    )
 
     args = parser.parse_args()
-    executor = SovereignExecutor()
+    app = Executor()
+
+    if args.command == "cycle":
+        print(json.dumps(
+            app.cycle(),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
     if args.command == "backup":
-        output = executor.backup.create(pathlib.Path(args.target))
+        print(json.dumps(
+            app.backup(
+                pathlib.Path(args.path)
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
-    elif args.command == "verify":
-        output = executor.verify_release(
-            pathlib.Path(args.target),
-            args.url,
-        )
+    if args.command == "restore-test":
+        print(json.dumps(
+            app.restore_test(
+                pathlib.Path(args.backup)
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
-    elif args.command == "service":
-        output = executor.service.inspect(args.name)
+    if args.command == "verify-project":
+        print(json.dumps(
+            app.code_quality(
+                pathlib.Path(args.project)
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
-    elif args.command == "tls":
-        output = executor.tls.verify(args.host)
+    if args.command == "migration-snapshot":
+        print(json.dumps(
+            app.migration_snapshot(
+                pathlib.Path(args.repo)
+            ),
+            ensure_ascii=False,
+            indent=2,
+        ))
+        return 0
 
-    else:
-        output = executor.migration.copy_and_verify(
-            pathlib.Path(args.source),
-            pathlib.Path(args.destination),
-        )
+    if args.command == "loop":
+        while True:
+            try:
+                app.cycle()
+            except Exception as exc:
+                app.evidence(
+                    "EXECUTOR_LOOP_FAILURE",
+                    "executor",
+                    {"error": repr(exc)},
+                )
+            time.sleep(
+                max(10, args.interval)
+            )
 
-    print(json.dumps(output, ensure_ascii=False, indent=2))
-    return 0 if output.get("ok", True) else 1
+    return 0
 
 
 if __name__ == "__main__":
